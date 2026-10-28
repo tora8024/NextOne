@@ -56,37 +56,35 @@ export function DashboardPage() {
         })}
       </section>
 
-      <div className="split">
-        <section className="panel">
-          <div className="section-head">
-            <h2>尚未完成</h2>
-            <Link to="/orders?status=open">查看全部</Link>
+      <section className="panel">
+        <div className="section-head">
+          <h2>尚未完成</h2>
+          <Link to="/orders?status=open">查看全部</Link>
+        </div>
+        <OrderTable orders={openOrders.slice(0, 6)} customers={db.customers} devices={db.devices} empty="目前沒有未結案的維修單。" />
+      </section>
+      <section className="panel">
+        <div className="section-head">
+          <h2>最近的處理紀錄</h2>
+        </div>
+        {activity.length === 0 ? (
+          <p className="empty">還沒有處理紀錄。</p>
+        ) : (
+          <div className="activity activity-grid">
+            {activity.map((item) => (
+              <Link key={item.log.id} to={`/orders/${item.orderId}`} className="activity-item">
+                <span className="log-meta">
+                  <span className="mono">{item.orderNumber}</span>
+                  <span>{formatDateTime(item.log.at)}</span>
+                  <span>{item.log.author}</span>
+                  <span className="tag">{item.log.visibleToCustomer ? '客戶可見' : '內部'}</span>
+                </span>
+                <span className="clamp-3">{item.log.content}</span>
+              </Link>
+            ))}
           </div>
-          <OrderTable orders={openOrders.slice(0, 6)} customers={db.customers} devices={db.devices} empty="目前沒有未結案的維修單。" />
-        </section>
-        <section className="panel">
-          <div className="section-head">
-            <h2>最近的處理紀錄</h2>
-          </div>
-          {activity.length === 0 ? (
-            <p className="empty">還沒有處理紀錄。</p>
-          ) : (
-            <div className="activity">
-              {activity.map((item) => (
-                <Link key={item.log.id} to={`/orders/${item.orderId}`} className="activity-item">
-                  <span className="log-meta">
-                    <span className="mono">{item.orderNumber}</span>
-                    <span>{formatDateTime(item.log.at)}</span>
-                    <span>{item.log.author}</span>
-                    <span className="tag">{item.log.visibleToCustomer ? '客戶可見' : '內部'}</span>
-                  </span>
-                  <span className="clamp-3">{item.log.content}</span>
-                </Link>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
+        )}
+      </section>
     </>
   );
 }

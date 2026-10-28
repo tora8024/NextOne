@@ -29,7 +29,7 @@ export function maskPhone(phone: string): string {
 export function maskSerial(serial?: string): string | undefined {
   if (!serial) return undefined;
   if (serial.length <= 4) return serial;
-  return `····${serial.slice(-4)}`;
+  return serial.slice(-4);
 }
 
 export function formatDateTime(iso: string): string {

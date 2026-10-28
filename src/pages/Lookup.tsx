@@ -56,7 +56,7 @@ function LookupCard({ order }: { order: RepairOrder }) {
         <dt>設備</dt>
         <dd>
           {device ? deviceLabel(device) : '—'}
-          {serial ? <span className="muted"> · 序號末碼 {serial}</span> : null}
+          {serial ? <span className="muted">（序號末四碼 {serial}）</span> : null}
         </dd>
         <dt>送修內容</dt>
         <dd>

@@ -40,10 +40,12 @@ export function OrderTable({
             const device = deviceById.get(order.deviceId);
             return (
               <tr key={order.id} {...rowNavigate(`/orders/${order.id}`, `開啟維修單 ${order.orderNumber}`)}>
-                <td data-label="單號" className="mono">
+                <td data-label="單號" className="mono nowrap">
                   {order.orderNumber}
                 </td>
-                <td data-label="客戶">{customer?.name ?? '未知客戶'}</td>
+                <td data-label="客戶" className="nowrap">
+                  {customer?.name ?? '未知客戶'}
+                </td>
                 <td data-label="設備">{device ? `${device.brand} ${device.model}` : '未知設備'}</td>
                 <td data-label="送修項目">
                   <span className="tag">{REPAIR_KIND_LABEL[order.repairKind]}</span>
