@@ -3,11 +3,11 @@ import { OrderTable } from '../components/OrderTable';
 import { deviceLabel, formatDateTime, formatPhone } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 import { sortOrders } from '../lib/db';
-import { useStore } from '../lib/store';
+import { useDatabase } from '../lib/store';
 
 export function CustomerDetailPage() {
   const { customerId } = useParams();
-  const { db } = useStore();
+  const db = useDatabase();
   const customer = db.customers.find((item) => item.id === customerId);
   usePageTitle(customer?.name ?? '找不到客戶');
   if (!customer) {
@@ -47,6 +47,10 @@ export function CustomerDetailPage() {
         <section className="panel">
           <h2>聯絡方式</h2>
           <dl className="meta">
+            <dt>公號</dt>
+            <dd className="mono">{customer.employeeNumber}</dd>
+            <dt>NT 帳號</dt>
+            <dd className="mono">{customer.ntAccount}</dd>
             <dt>電話</dt>
             <dd className="mono">{formatPhone(customer.phone)}</dd>
             <dt>電子郵件</dt>

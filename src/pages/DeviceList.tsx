@@ -5,10 +5,10 @@ import { useRowNavigate } from '../components/useRowNavigate';
 import { sortOrders } from '../lib/db';
 import { usePageTitle } from '../lib/hooks';
 import { DEVICE_KIND_LABEL } from '../lib/labels';
-import { useStore } from '../lib/store';
+import { useDatabase } from '../lib/store';
 
 export function DeviceListPage() {
-  const { db } = useStore();
+  const db = useDatabase();
   const rowNavigate = useRowNavigate();
   usePageTitle('設備');
   const latestByDevice = new Map<string, (typeof db.orders)[number]>();

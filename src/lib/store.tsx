@@ -1,71 +1,90 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createContext } from 'react';
 import type { CreateOrderInput, Database, RepairOrder, RepairStatus } from '../types';
-import { addLogRecord, createOrderRecord, loadDatabase, persist, STORAGE_KEY, updateStatusRecord } from './db';
-import { createSeed } from '../data/seed';
+import { api } from './api';
 
 type StoreValue = {
-  db: Database;
-  createOrder: (input: CreateOrderInput) => RepairOrder;
-  updateStatus: (orderId: string, status: RepairStatus, author: string) => void;
-  addLog: (orderId: string, input: { author: string; content: string; visibleToCustomer: boolean }) => void;
-  resetDemo: () => void;
+  db: Database | null;
+  error: string;
+  revision: number;
+  resetDemo: () => Promise<void>;
+  createOrder: (input: CreateOrderInput) => Promise<RepairOrder>;
+  updateStatus: (orderId: string, status: RepairStatus, author: string) => Promise<void>;
+  addLog: (orderId: string, input: { author: string; content: string; visibleToCustomer: boolean }) => Promise<void>;
 };
 
 const StoreContext = createContext<StoreValue | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [db, setDb] = useState<Database>(() => loadDatabase());
-  const dbRef = useRef(db);
-  dbRef.current = db;
+  const [db, setDb] = useState<Database | null>(null);
+  const [error, setError] = useState('');
+  const [revision, setRevision] = useState(0);
 
-  const commit = useCallback((next: Database) => {
-    dbRef.current = next;
+  const refresh = useCallback(async () => {
+    const next = await api<Database>('/api/state');
     setDb(next);
-    persist(next);
+    setError('');
+    setRevision((value) => value + 1);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<Database>('/api/state')
+      .then((next) => {
+        if (cancelled) return;
+        setDb(next);
+        setError('');
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setError(reason instanceof Error ? reason.message : '無法讀取維修資料');
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const createOrder = useCallback(
-    (input: CreateOrderInput) => {
-      const result = createOrderRecord(dbRef.current, input);
-      commit(result.db);
+    async (input: CreateOrderInput) => {
+      const result = await api<{ order: RepairOrder }>('/api/orders', { method: 'POST', body: JSON.stringify(input) });
+      await refresh();
       return result.order;
     },
-    [commit],
+    [refresh],
   );
 
   const updateStatus = useCallback(
-    (orderId: string, status: RepairStatus, author: string) => {
-      commit(updateStatusRecord(dbRef.current, orderId, status, author));
+    async (orderId: string, status: RepairStatus, author: string) => {
+      await api(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+        method: 'POST',
+        body: JSON.stringify({ status, author }),
+      });
+      await refresh();
     },
-    [commit],
+    [refresh],
   );
 
   const addLog = useCallback(
-    (orderId: string, input: { author: string; content: string; visibleToCustomer: boolean }) => {
-      commit(addLogRecord(dbRef.current, orderId, input));
+    async (orderId: string, input: { author: string; content: string; visibleToCustomer: boolean }) => {
+      await api(`/api/orders/${encodeURIComponent(orderId)}/logs`, {
+        method: 'POST',
+        body: JSON.stringify(input),
+      });
+      await refresh();
     },
-    [commit],
+    [refresh],
   );
 
-  const resetDemo = useCallback(() => {
-    commit(createSeed());
-  }, [commit]);
-
-  useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== STORAGE_KEY) return;
-      const next = loadDatabase();
-      dbRef.current = next;
-      setDb(next);
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+  const resetDemo = useCallback(async () => {
+    const next = await api<Database>('/api/admin/reset', { method: 'POST' });
+    setDb(next);
+    setError('');
+    setRevision((value) => value + 1);
   }, []);
 
   const value = useMemo(
-    () => ({ db, createOrder, updateStatus, addLog, resetDemo }),
-    [db, createOrder, updateStatus, addLog, resetDemo],
+    () => ({ db, error, revision, resetDemo, createOrder, updateStatus, addLog }),
+    [db, error, revision, resetDemo, createOrder, updateStatus, addLog],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
@@ -75,4 +94,10 @@ export function useStore(): StoreValue {
   const value = useContext(StoreContext);
   if (!value) throw new Error('維修資料尚未準備好');
   return value;
+}
+
+export function useDatabase(): Database {
+  const { db } = useStore();
+  if (!db) throw new Error('資料尚未載入');
+  return db;
 }

@@ -21,12 +21,12 @@ function activeId(pathname: string): string {
 }
 
 export function AdminLayout() {
-  const { db, resetDemo } = useStore();
+  const { db, error, resetDemo } = useStore();
   const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const current = activeId(location.pathname);
-  const openCount = db.orders.filter((order) => order.status !== 'completed').length;
+  const openCount = db?.orders.filter((order) => order.status !== 'completed').length ?? 0;
 
   useEffect(() => {
     setOpen(false);
@@ -70,10 +70,9 @@ export function AdminLayout() {
             type="button"
             className="reset-btn"
             onClick={() => {
-              const ok = window.confirm('還原後，這個瀏覽器裡新增或修改的資料會被示範資料覆蓋。確定要還原嗎？');
+              const ok = window.confirm('還原後，資料庫裡的維修資料會被示範資料覆蓋。確定要還原嗎？');
               if (!ok) return;
-              resetDemo();
-              navigate('/');
+              void resetDemo().then(() => navigate('/'));
             }}
           >
             還原示範資料
@@ -88,7 +87,7 @@ export function AdminLayout() {
           <strong>NextOne 維修台</strong>
         </header>
         <main id="content" className="content">
-          <Outlet />
+          {!db ? <p className={error ? 'form-error' : 'empty'}>{error || '正在從資料庫讀取…'}</p> : <Outlet />}
         </main>
       </div>
     </div>

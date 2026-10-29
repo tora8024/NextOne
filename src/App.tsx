@@ -1,7 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { AdminLayout } from './components/Layout';
-import { STORAGE_KEY } from './lib/db';
 import { StoreProvider } from './lib/store';
 import { CustomerDetailPage } from './pages/CustomerDetail';
 import { CustomerListPage } from './pages/CustomerList';
@@ -37,16 +36,9 @@ class ErrorBoundary extends Component<BoundaryProps, BoundaryState> {
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => {
-              try {
-                localStorage.removeItem(STORAGE_KEY);
-              } catch {
-                // ignore
-              }
-              window.location.reload();
-            }}
+            onClick={() => window.location.reload()}
           >
-            清除本機資料並重試
+            重新整理
           </button>
         </div>
       );
@@ -63,11 +55,16 @@ function NewOrderRoute() {
 export default function App() {
   return (
     <ErrorBoundary>
-      <StoreProvider>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/lookup" element={<LookupPage />} />
-            <Route element={<AdminLayout />}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/lookup" element={<LookupPage />} />
+          <Route
+            element={
+              <StoreProvider>
+                <AdminLayout />
+              </StoreProvider>
+            }
+          >
               <Route index element={<DashboardPage />} />
               <Route path="orders" element={<OrderListPage />} />
               <Route path="orders/new" element={<NewOrderRoute />} />
@@ -79,8 +76,7 @@ export default function App() {
               <Route path="*" element={<NotFoundPage />} />
             </Route>
           </Routes>
-        </BrowserRouter>
-      </StoreProvider>
+      </BrowserRouter>
     </ErrorBoundary>
   );
 }

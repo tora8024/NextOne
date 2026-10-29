@@ -1,16 +1,13 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { StatusBadge } from '../components/StatusBadge';
-import { findCustomerByContact, findOrderByNumber, sortOrders } from '../lib/db';
-import { deviceLabel, formatDateTime, maskPhone, maskSerial, normalizePhone } from '../lib/format';
+import { api } from '../lib/api';
+import { formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 import { REPAIR_KIND_LABEL, STATUS_HINT, STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
-import { useStore } from '../lib/store';
-import type { RepairOrder, RepairStatus } from '../types';
+import type { PublicOrder, RepairStatus } from '../types';
 
-type Query =
-  | { kind: 'number'; value: string }
-  | { kind: 'contact'; name: string; phone: string };
+type Query = { number: string; nt: string; from: string; to: string };
 
 function StatusStepper({ status }: { status: RepairStatus }) {
   const current = STATUS_ORDER.indexOf(status);
@@ -29,13 +26,7 @@ function StatusStepper({ status }: { status: RepairStatus }) {
   );
 }
 
-function LookupCard({ order }: { order: RepairOrder }) {
-  const { db } = useStore();
-  const customer = db.customers.find((item) => item.id === order.customerId);
-  const device = db.devices.find((item) => item.id === order.deviceId);
-  const visibleLogs = order.logs.filter((entry) => entry.visibleToCustomer);
-  const serial = maskSerial(device?.serialNumber);
-
+function LookupCard({ order }: { order: PublicOrder }) {
   return (
     <article className="panel lookup-card">
       <div className="lookup-card-top">
@@ -50,13 +41,13 @@ function LookupCard({ order }: { order: RepairOrder }) {
       <dl className="meta">
         <dt>客戶</dt>
         <dd>
-          {customer?.name ?? '—'}
-          {customer ? <span className="muted"> · {maskPhone(customer.phone)}</span> : null}
+          {order.customerName}
+          {order.phoneMasked ? <span className="muted"> · {order.phoneMasked}</span> : null}
         </dd>
         <dt>設備</dt>
         <dd>
-          {device ? deviceLabel(device) : '—'}
-          {serial ? <span className="muted">（序號末四碼 {serial}）</span> : null}
+          {order.deviceSummary}
+          {order.serialLast4 ? <span className="muted">（序號末四碼 {order.serialLast4}）</span> : null}
         </dd>
         <dt>送修內容</dt>
         <dd>
@@ -74,11 +65,11 @@ function LookupCard({ order }: { order: RepairOrder }) {
         ) : null}
       </dl>
       <h3>進度說明</h3>
-      {visibleLogs.length === 0 ? (
+      {order.publicLogs.length === 0 ? (
         <p className="empty">目前沒有額外說明，請以上方狀態為準。</p>
       ) : (
         <ol className="timeline">
-          {visibleLogs.map((entry) => (
+          {order.publicLogs.map((entry) => (
             <li key={entry.id}>
               <div className="log-meta">
                 <span>{formatDateTime(entry.at)}</span>
@@ -94,70 +85,61 @@ function LookupCard({ order }: { order: RepairOrder }) {
 }
 
 export function LookupPage() {
-  const { db } = useStore();
   const [params] = useSearchParams();
-  const presetNo = params.get('no') ?? '';
-  const [mode, setMode] = useState<'number' | 'contact'>('number');
-  const [orderNo, setOrderNo] = useState(presetNo);
-  const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
+  const preset = params.get('number') ?? '';
+  const [number, setNumber] = useState(preset);
+  const [nt, setNt] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [error, setError] = useState('');
-  const [query, setQuery] = useState<Query | null>(presetNo ? { kind: 'number', value: presetNo } : null);
+  const [pending, setPending] = useState(false);
+  const [orders, setOrders] = useState<PublicOrder[] | null>(null);
+  const [query, setQuery] = useState<Query | null>(preset ? { number: preset, nt: '', from: '', to: '' } : null);
   usePageTitle('查詢維修進度');
 
   useEffect(() => {
-    if (!presetNo) return;
-    setMode('number');
-    setOrderNo(presetNo);
-    setError('');
-    setQuery({ kind: 'number', value: presetNo });
-  }, [presetNo]);
+    if (!query) return;
+    const controller = new AbortController();
+    const search = new URLSearchParams();
+    if (query.number.trim()) search.set('number', query.number.trim());
+    if (query.nt.trim()) search.set('nt', query.nt.trim());
+    if (query.from) search.set('from', query.from);
+    if (query.to) search.set('to', query.to);
+    setPending(true);
+    api<{ orders: PublicOrder[] }>(`/api/lookup?${search.toString()}`, { signal: controller.signal })
+      .then((result) => {
+        setOrders(result.orders);
+        setError('');
+      })
+      .catch((reason: unknown) => {
+        if (reason instanceof DOMException && reason.name === 'AbortError') return;
+        setOrders([]);
+        setError(reason instanceof Error ? reason.message : '查詢失敗');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setPending(false);
+      });
+    return () => controller.abort();
+  }, [query]);
 
-  const orders = useMemo(() => {
-    if (!query) return [];
-    if (query.kind === 'number') {
-      const order = findOrderByNumber(db.orders, query.value);
-      return order ? [order] : [];
-    }
-    const customer = findCustomerByContact(db.customers, query.name, query.phone);
-    if (!customer) return [];
-    return sortOrders(db.orders.filter((order) => order.customerId === customer.id));
-  }, [db, query]);
-
-  function searchByNumber(value: string) {
-    setMode('number');
-    setOrderNo(value);
-    if (!value.trim()) {
-      setQuery(null);
-      setError('請輸入維修單號');
-      return;
-    }
+  function runQuery(next: Query) {
+    setNumber(next.number);
+    setNt(next.nt);
+    setFrom(next.from);
+    setTo(next.to);
     setError('');
-    setQuery({ kind: 'number', value });
-  }
-
-  function searchByContact(nextName: string, nextPhone: string) {
-    setMode('contact');
-    setName(nextName);
-    setPhone(nextPhone);
-    if (!nextName.trim()) {
-      setQuery(null);
-      setError('請輸入客戶姓名');
-      return;
-    }
-    if (normalizePhone(nextPhone).length < 8) {
-      setQuery(null);
-      setError('請輸入完整電話');
-      return;
-    }
-    setError('');
-    setQuery({ kind: 'contact', name: nextName, phone: nextPhone });
+    setQuery(next);
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (mode === 'number') searchByNumber(orderNo);
-    else searchByContact(name, phone);
+    if (!number.trim() && !nt.trim()) {
+      setOrders(null);
+      setError('請輸入公號、完整單號或 NT 帳號');
+      return;
+    }
+    setError('');
+    setQuery({ number, nt, from, to });
   }
 
   return (
@@ -175,118 +157,84 @@ export function LookupPage() {
             <h1>查詢維修進度</h1>
           </div>
         </header>
-        <p className="lede">輸入維修單號，或使用留在店裡的姓名與電話。此頁只顯示進度，不含內部檢測紀錄。</p>
+        <p className="lede">輸入 6 位數公號或 NT 帳號。此頁只顯示狀態與可公開的進度，不含店內檢測指令。</p>
 
         <form id="lookup-form" className="panel" onSubmit={onSubmit} noValidate>
-          <div className="choice-row" role="radiogroup" aria-label="查詢方式">
-            <label className={mode === 'number' ? 'choice active' : 'choice'}>
-              <input
-                type="radio"
-                name="lookupMode"
-                checked={mode === 'number'}
-                onChange={() => {
-                  setMode('number');
-                  setError('');
-                }}
-              />
-              維修單號
+          <label className="field">
+            <span>公號或完整單號</span>
+            <input
+              value={number}
+              onChange={(event) => {
+                setNumber(event.target.value);
+                setOrders(null);
+                setError('');
+              }}
+              placeholder="100002 或 維修單-20261024-001"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label className="field">
+            <span>NT 帳號</span>
+            <input
+              value={nt}
+              onChange={(event) => {
+                setNt(event.target.value);
+                setOrders(null);
+                setError('');
+              }}
+              placeholder="chenghan 或 CORP\chenghan"
+              autoComplete="username"
+              spellCheck={false}
+            />
+          </label>
+          <div className="grid-2">
+            <label className="field">
+              <span>建立日起（選填）</span>
+              <input type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
             </label>
-            <label className={mode === 'contact' ? 'choice active' : 'choice'}>
-              <input
-                type="radio"
-                name="lookupMode"
-                checked={mode === 'contact'}
-                onChange={() => {
-                  setMode('contact');
-                  setError('');
-                }}
-              />
-              姓名與電話
+            <label className="field">
+              <span>建立日迄（選填）</span>
+              <input type="date" value={to} onChange={(event) => setTo(event.target.value)} />
             </label>
           </div>
-          {mode === 'number' ? (
-            <label className="field">
-              <span>維修單號</span>
-              <input
-                value={orderNo}
-                onChange={(event) => {
-                  setOrderNo(event.target.value);
-                  setQuery(null);
-                  setError('');
-                }}
-                placeholder="例如 NX-2610-002"
-                autoCapitalize="characters"
-                autoCorrect="off"
-                spellCheck={false}
-                maxLength={20}
-              />
-            </label>
-          ) : (
-            <div className="grid-2">
-              <label className="field">
-                <span>客戶姓名</span>
-                <input
-                  value={name}
-                  onChange={(event) => {
-                    setName(event.target.value);
-                    setQuery(null);
-                    setError('');
-                  }}
-                  autoComplete="name"
-                  maxLength={40}
-                  placeholder="需與建檔姓名相同"
-                />
-              </label>
-              <label className="field">
-                <span>聯絡電話</span>
-                <input
-                  value={phone}
-                  onChange={(event) => {
-                    setPhone(event.target.value);
-                    setQuery(null);
-                    setError('');
-                  }}
-                  autoComplete="tel"
-                  inputMode="tel"
-                  maxLength={30}
-                  placeholder="0912-334-567"
-                />
-              </label>
-            </div>
-          )}
           {error ? (
             <p className="form-error" role="alert">
               {error}
             </p>
           ) : null}
-          <button type="submit" className="btn btn-primary">
-            查詢進度
+          <button type="submit" className="btn btn-primary" disabled={pending}>
+            {pending ? '查詢中…' : '查詢進度'}
           </button>
           <p className="hint">
-            示範：
-            <button type="button" className="text-btn" onClick={() => searchByNumber('NX-2610-002')}>
-              NX-2610-002
+            公號會同時找員工編號，以及維修單當天的流水號。流水號每天從 001 重來，只查 1 或 001 可能看到很多天；可加上日期。示範：
+            <button type="button" className="text-btn" onClick={() => runQuery({ number: '100002', nt: '', from: '', to: '' })}>
+              公號 100002
             </button>
-            ，或
-            <button type="button" className="text-btn" onClick={() => searchByContact('林承翰', '0928-110-334')}>
-              林承翰 / 0928-110-334
+            、
+            <button type="button" className="text-btn" onClick={() => runQuery({ number: '', nt: 'chenghan', from: '', to: '' })}>
+              NT chenghan
+            </button>
+            、
+            <button type="button" className="text-btn" onClick={() => runQuery({ number: '1', nt: '', from: '2026-10-24', to: '2026-10-24' })}>
+              流水號 1（2026-10-24）
             </button>
             。
           </p>
         </form>
 
-        {query && !error && orders.length === 0 ? (
+        {orders && orders.length === 0 && !error ? (
           <div className="panel empty-state">
             <h2>查無符合的維修單</h2>
-            <p>請再核對單號，或改用建檔時的姓名與電話。電話可以含或不含連字號。</p>
+            <p>請再核對公號、NT 帳號或日期。流水號若沒有搭配日期，不同天的 001 都會出現。</p>
           </div>
         ) : null}
 
-        {orders.length > 0 ? (
+        {orders && orders.length > 0 ? (
           <div className="stack">
             <p className="result-count">找到 {orders.length} 張維修單</p>
             {orders.map((order) => (
-              <LookupCard key={order.id} order={order} />
+              <LookupCard key={order.orderNumber} order={order} />
             ))}
           </div>
         ) : null}

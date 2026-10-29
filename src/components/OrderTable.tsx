@@ -1,5 +1,5 @@
 import { deviceLabel, formatDateTime } from '../lib/format';
-import { REPAIR_KIND_LABEL } from '../lib/labels';
+import { MATCH_LABEL, REPAIR_KIND_LABEL } from '../lib/labels';
 import type { Customer, Device, RepairOrder } from '../types';
 import { StatusBadge } from './StatusBadge';
 import { useRowNavigate } from './useRowNavigate';
@@ -42,6 +42,15 @@ export function OrderTable({
               <tr key={order.id} {...rowNavigate(`/orders/${order.id}`, `開啟維修單 ${order.orderNumber}`)}>
                 <td data-label="單號" className="mono nowrap">
                   {order.orderNumber}
+                  {order.matches && order.matches.length > 0 ? (
+                    <span className="tiny">
+                      {order.matches.map((match) => (
+                        <span key={match} className="tag">
+                          {MATCH_LABEL[match]}
+                        </span>
+                      ))}
+                    </span>
+                  ) : null}
                 </td>
                 <td data-label="客戶" className="nowrap">
                   {customer?.name ?? '未知客戶'}

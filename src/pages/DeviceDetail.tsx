@@ -3,11 +3,11 @@ import { OrderTable } from '../components/OrderTable';
 import { sortOrders } from '../lib/db';
 import { deviceLabel, formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
-import { useStore } from '../lib/store';
+import { useDatabase } from '../lib/store';
 
 export function DeviceDetailPage() {
   const { deviceId } = useParams();
-  const { db } = useStore();
+  const db = useDatabase();
   const device = db.devices.find((item) => item.id === deviceId);
   const customer = db.customers.find((item) => item.id === device?.customerId);
   usePageTitle(device ? `${device.brand} ${device.model}` : '找不到設備');

@@ -1,4 +1,11 @@
-import type { DeviceKind, RepairKind, RepairStatus } from '../types';
+import type { DeviceKind, MatchReason, RepairKind, RepairStatus } from '../types';
+
+export const MATCH_LABEL: Record<MatchReason, string> = {
+  employee_number: '公號（員工）',
+  order_serial: '當日序號',
+  order_number: '完整單號',
+  nt_account: 'NT 帳號',
+};
 
 export const STATUS_ORDER: RepairStatus[] = ['received', 'in_progress', 'ready', 'completed'];
 

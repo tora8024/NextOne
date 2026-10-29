@@ -4,11 +4,13 @@ import { PageHeader } from '../components/PageHeader';
 import { normalizePhone } from '../lib/format';
 import { usePageTitle, useTechnician } from '../lib/hooks';
 import { DEVICE_KIND_LABEL, DEVICE_KINDS, REPAIR_KIND_LABEL, REPAIR_KINDS } from '../lib/labels';
-import { useStore } from '../lib/store';
+import { isEmployeeNumber, isNtAccount, toHalfWidth } from '../lib/orderNumber';
+import { useDatabase, useStore } from '../lib/store';
 import type { DeviceKind, RepairKind } from '../types';
 
 export function OrderFormPage() {
-  const { db, createOrder } = useStore();
+  const db = useDatabase();
+  const { createOrder } = useStore();
   const navigate = useNavigate();
   const [author, setAuthor] = useTechnician();
   usePageTitle('建立維修單');
@@ -26,6 +28,9 @@ export function OrderFormPage() {
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [customerNote, setCustomerNote] = useState('');
+  const [employeeNumber, setEmployeeNumber] = useState('');
+  const [ntAccount, setNtAccount] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const [deviceMode, setDeviceMode] = useState<'existing' | 'new'>('existing');
   const [deviceId, setDeviceId] = useState(() => {
@@ -67,7 +72,7 @@ export function OrderFormPage() {
     setDeviceId((current) => (owned.some((device) => device.id === current) ? current : first.id));
   }, [customerMode, owned]);
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextErrors: Record<string, string> = {};
     if (customerMode === 'existing') {
@@ -75,6 +80,8 @@ export function OrderFormPage() {
     } else {
       if (!name.trim()) nextErrors.name = '請填寫客戶姓名';
       if (normalizePhone(phone).length < 8) nextErrors.phone = '請填寫有效的聯絡電話';
+      if (!isEmployeeNumber(toHalfWidth(employeeNumber).trim())) nextErrors.employeeNumber = '公號必須是 6 位數字';
+      if (!isNtAccount(ntAccount.trim())) nextErrors.ntAccount = '請填寫 NT 帳號，例如 CORP\\pinyan';
       if (email.trim() && !email.includes('@')) nextErrors.email = '電子郵件格式不正確';
     }
     if (!creatingDevice) {
@@ -89,7 +96,8 @@ export function OrderFormPage() {
     }
 
     try {
-      const order = createOrder({
+      setSaving(true);
+      const order = await createOrder({
         customer:
           customerMode === 'existing'
             ? { mode: 'existing', id: customerId }
@@ -99,6 +107,8 @@ export function OrderFormPage() {
                 phone: phone.trim(),
                 email: email.trim() || undefined,
                 note: customerNote.trim() || undefined,
+                employeeNumber: toHalfWidth(employeeNumber).trim(),
+                ntAccount: ntAccount.trim(),
               },
         device: creatingDevice
           ? {
@@ -120,12 +130,18 @@ export function OrderFormPage() {
       navigate(`/orders/${order.id}`, { state: { created: true } });
     } catch (error) {
       setErrors({ form: error instanceof Error ? error.message : '無法建立維修單' });
+    } finally {
+      setSaving(false);
     }
   }
 
   return (
     <form className="narrow" onSubmit={onSubmit} noValidate>
-      <PageHeader kicker="受理" title="建立維修單" lede="把客戶、設備、送修項目與需求記在同一張單上。單號建立後可交給客戶查詢。" />
+      <PageHeader
+        kicker="受理"
+        title="建立維修單"
+        lede="新客戶要填 6 位數公號與 NT 帳號。單號依台北時間當天自動編號，例如 維修單-20261029-001，隔日從 001 重新開始。"
+      />
       {errors.form ? (
         <p className="form-error" role="alert">
           {errors.form}
@@ -153,12 +169,17 @@ export function OrderFormPage() {
             <select value={customerId} onChange={(event) => setCustomerId(event.target.value)}>
               {customers.map((customer) => (
                 <option key={customer.id} value={customer.id}>
-                  {customer.name} · {customer.phone}
+                  {customer.name} · {customer.employeeNumber}
                 </option>
               ))}
             </select>
             {errors.customer ? <span className="field-error">{errors.customer}</span> : null}
-            {selectedCustomer ? <span className="hint">{selectedCustomer.note || '這位客戶沒有備註。'}</span> : null}
+            {selectedCustomer ? (
+              <span className="hint">
+                公號 {selectedCustomer.employeeNumber} · {selectedCustomer.ntAccount}
+                {selectedCustomer.note ? ` · ${selectedCustomer.note}` : ''}
+              </span>
+            ) : null}
           </label>
         ) : (
           <div className="grid-2">
@@ -171,6 +192,16 @@ export function OrderFormPage() {
               <span>聯絡電話</span>
               <input value={phone} onChange={(event) => setPhone(event.target.value)} maxLength={30} autoComplete="tel" inputMode="tel" placeholder="0912-334-567" />
               {errors.phone ? <span className="field-error">{errors.phone}</span> : null}
+            </label>
+            <label className="field">
+              <span>公號</span>
+              <input value={employeeNumber} onChange={(event) => setEmployeeNumber(event.target.value)} inputMode="numeric" maxLength={6} placeholder="6 位數字，例如 100006" />
+              {errors.employeeNumber ? <span className="field-error">{errors.employeeNumber}</span> : null}
+            </label>
+            <label className="field">
+              <span>NT 帳號</span>
+              <input value={ntAccount} onChange={(event) => setNtAccount(event.target.value)} maxLength={80} placeholder="CORP\name 或 name" spellCheck={false} />
+              {errors.ntAccount ? <span className="field-error">{errors.ntAccount}</span> : null}
             </label>
             <label className="field">
               <span>電子郵件（選填）</span>
@@ -296,8 +327,8 @@ export function OrderFormPage() {
       </section>
 
       <div className="form-actions">
-        <button type="submit" className="btn btn-primary">
-          建立維修單
+        <button type="submit" className="btn btn-primary" disabled={saving}>
+          {saving ? '建立中…' : '建立維修單'}
         </button>
       </div>
     </form>

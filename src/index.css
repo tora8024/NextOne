@@ -786,6 +786,11 @@ legend {
   color: #fff;
 }
 
+.status-history {
+  margin: 12px 0 0;
+  padding-left: 18px;
+}
+
 .inline-field {
   display: flex;
   align-items: center;

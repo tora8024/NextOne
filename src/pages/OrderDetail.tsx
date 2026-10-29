@@ -4,13 +4,14 @@ import { StatusBadge } from '../components/StatusBadge';
 import { deviceLabel, formatDateTime, formatPhone } from '../lib/format';
 import { usePageTitle, useTechnician } from '../lib/hooks';
 import { REPAIR_KIND_LABEL, STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
-import { useStore } from '../lib/store';
+import { useDatabase, useStore } from '../lib/store';
 import type { RepairStatus } from '../types';
 
 export function OrderDetailPage() {
   const { orderId } = useParams();
   const location = useLocation();
-  const { db, updateStatus, addLog } = useStore();
+  const db = useDatabase();
+  const { updateStatus, addLog } = useStore();
   const [author, setAuthor] = useTechnician();
   const order = db.orders.find((item) => item.id === orderId);
   const customer = db.customers.find((item) => item.id === order?.customerId);
@@ -23,7 +24,7 @@ export function OrderDetailPage() {
   usePageTitle(order?.orderNumber ?? '找不到維修單');
 
   useEffect(() => {
-    setNotice(created ? '維修單已建立。單號可以交給客戶查詢。' : '');
+    setNotice(created ? '維修單已建立。客戶可用公號、NT 帳號或完整單號查詢。' : '');
     setDraft('');
     setLogError('');
   }, [orderId, location.key, created]);
@@ -48,23 +49,31 @@ export function OrderDetailPage() {
     }
   }
 
-  function changeStatus(status: RepairStatus) {
+  async function changeStatus(status: RepairStatus) {
     if (!order || status === order.status) return;
-    updateStatus(order.id, status, author);
-    setNotice(`狀態已更新為「${STATUS_LABEL[status]}」。客戶查詢頁會看到這次變更。`);
+    try {
+      await updateStatus(order.id, status, author);
+      setNotice(`狀態已更新為「${STATUS_LABEL[status]}」。客戶查詢頁會看到這次變更。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '無法更新狀態');
+    }
   }
 
-  function onAddLog(event: FormEvent<HTMLFormElement>) {
+  async function onAddLog(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!order) return;
     if (!draft.trim()) {
       setLogError('請寫下做了什麼事或下了什麼指令');
       return;
     }
-    addLog(order.id, { author, content: draft, visibleToCustomer });
-    setDraft('');
-    setLogError('');
-    setNotice(visibleToCustomer ? '已加入處理紀錄，客戶查詢頁看得到。' : '已加入內部處理紀錄。');
+    try {
+      await addLog(order.id, { author, content: draft, visibleToCustomer });
+      setDraft('');
+      setLogError('');
+      setNotice(visibleToCustomer ? '已加入處理紀錄，客戶查詢頁看得到。' : '已加入內部處理紀錄。');
+    } catch (error) {
+      setLogError(error instanceof Error ? error.message : '無法新增紀錄');
+    }
   }
 
   return (
@@ -93,7 +102,7 @@ export function OrderDetailPage() {
           <button type="button" className="btn btn-ghost" onClick={() => void copyNumber()}>
             複製單號
           </button>
-          <Link className="btn btn-ghost" to={`/lookup?no=${encodeURIComponent(order.orderNumber)}`} target="_blank" rel="noreferrer">
+          <Link className="btn btn-ghost" to={`/lookup?number=${encodeURIComponent(order.orderNumber)}`} target="_blank" rel="noreferrer">
             預覽客戶頁
           </Link>
         </div>
@@ -114,7 +123,18 @@ export function OrderDetailPage() {
             </button>
           ))}
         </div>
-        <p className="hint">變更狀態時會留下一筆客戶看得到的進度。</p>
+        <p className="hint">變更狀態時會留下一筆客戶看得到的進度，並寫入狀態歷程。</p>
+        {order.statusHistory && order.statusHistory.length > 0 ? (
+          <ol className="status-history">
+            {order.statusHistory.map((change) => (
+              <li key={change.id}>
+                <span className="muted">{formatDateTime(change.at)}</span> {change.fromStatus ? `${STATUS_LABEL[change.fromStatus]} → ` : ''}
+                {STATUS_LABEL[change.toStatus]}
+                <span className="muted"> · {change.author}</span>
+              </li>
+            ))}
+          </ol>
+        ) : null}
       </section>
 
       <div className="detail-grid">
@@ -182,6 +202,8 @@ export function OrderDetailPage() {
                 <p className="side-title">
                   <Link to={`/customers/${customer.id}`}>{customer.name}</Link>
                 </p>
+                <p className="mono">公號 {customer.employeeNumber}</p>
+                <p className="mono">{customer.ntAccount}</p>
                 <p className="mono">{formatPhone(customer.phone)}</p>
                 {customer.email ? <p>{customer.email}</p> : null}
                 {customer.note ? <p className="hint">{customer.note}</p> : null}

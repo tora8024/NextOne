@@ -2,11 +2,11 @@ import { Link } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader';
 import { formatPhone } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
-import { useStore } from '../lib/store';
+import { useDatabase } from '../lib/store';
 import { useRowNavigate } from '../components/useRowNavigate';
 
 export function CustomerListPage() {
-  const { db } = useStore();
+  const db = useDatabase();
   const rowNavigate = useRowNavigate();
   usePageTitle('客戶');
   const customers = [...db.customers].sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'));
@@ -29,6 +29,8 @@ export function CustomerListPage() {
           <thead>
             <tr>
               <th scope="col">客戶</th>
+              <th scope="col">公號</th>
+              <th scope="col">NT 帳號</th>
               <th scope="col">電話</th>
               <th scope="col">設備</th>
               <th scope="col">未結案</th>
@@ -45,6 +47,12 @@ export function CustomerListPage() {
                   <td data-label="客戶">
                     <strong>{customer.name}</strong>
                     {customer.note ? <span className="muted tiny">{customer.note}</span> : null}
+                  </td>
+                  <td data-label="公號" className="mono">
+                    {customer.employeeNumber}
+                  </td>
+                  <td data-label="NT 帳號" className="mono">
+                    {customer.ntAccount}
                   </td>
                   <td data-label="電話" className="mono">
                     {formatPhone(customer.phone)}

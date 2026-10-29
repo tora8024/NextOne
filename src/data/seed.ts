@@ -1,3 +1,4 @@
+import { formatOrderNumber, isEmployeeNumber, isNtAccount, taipeiCalendar } from '../lib/orderNumber';
 import type { ActionLog, Customer, Database, Device, RepairOrder } from '../types';
 
 function log(
@@ -11,7 +12,7 @@ function log(
   return { id, at, author, content, visibleToCustomer, kind };
 }
 
-function makeOrder(order: Omit<RepairOrder, 'updatedAt'>): RepairOrder {
+function makeOrder(order: Omit<RepairOrder, 'updatedAt' | 'statusHistory' | 'matches'>): RepairOrder {
   const lastLog = order.logs.at(-1);
   return { ...order, updatedAt: lastLog?.at ?? order.createdAt };
 }
@@ -23,6 +24,8 @@ export function createSeed(): Database {
       name: '陳品妍',
       phone: '0912-334-567',
       email: 'pinyan@example.com',
+      employeeNumber: '100001',
+      ntAccount: 'CORP\\pinyan',
       note: '偏好週二、週四下午以後取件。',
       createdAt: '2026-03-02T10:00:00+08:00',
     },
@@ -30,6 +33,8 @@ export function createSeed(): Database {
       id: 'cus-lin',
       name: '林承翰',
       phone: '0928-110-334',
+      employeeNumber: '100002',
+      ntAccount: 'CORP\\chenghan',
       note: '剪輯用機為主，取件前請先電話確認。',
       createdAt: '2026-05-18T10:00:00+08:00',
     },
@@ -37,6 +42,8 @@ export function createSeed(): Database {
       id: 'cus-huang',
       name: '黃詩涵',
       phone: '0933-882-019',
+      employeeNumber: '100003',
+      ntAccount: 'CORP\\shihan',
       note: '學生，晚上六點後較容易聯絡。',
       createdAt: '2026-09-01T10:00:00+08:00',
     },
@@ -45,6 +52,8 @@ export function createSeed(): Database {
       name: '張家豪',
       phone: '0955-441-208',
       email: 'jiahao@example.com',
+      employeeNumber: '100004',
+      ntAccount: 'CORP\\jiahao',
       note: '舊零件請退回，不要代為回收。',
       createdAt: '2026-01-20T10:00:00+08:00',
     },
@@ -52,6 +61,8 @@ export function createSeed(): Database {
       id: 'cus-wu',
       name: '吳佩琪',
       phone: '0918-667-452',
+      employeeNumber: '100005',
+      ntAccount: 'CORP\\peiqi',
       note: '請開立發票，抬頭「佩琪會計師事務所」。',
       createdAt: '2026-07-11T10:00:00+08:00',
     },
@@ -138,7 +149,9 @@ export function createSeed(): Database {
   const orders: RepairOrder[] = [
     makeOrder({
       id: 'ord-2610001',
-      orderNumber: 'NX-2610-001',
+      orderDate: '20261027',
+      serial: 1,
+      orderNumber: '維修單-20261027-001',
       customerId: 'cus-chen',
       deviceId: 'dev-zenbook',
       repairKind: 'hardware',
@@ -165,7 +178,9 @@ export function createSeed(): Database {
     }),
     makeOrder({
       id: 'ord-2610002',
-      orderNumber: 'NX-2610-002',
+      orderDate: '20261024',
+      serial: 1,
+      orderNumber: '維修單-20261024-001',
       customerId: 'cus-lin',
       deviceId: 'dev-macbook',
       repairKind: 'hardware',
@@ -207,7 +222,9 @@ export function createSeed(): Database {
     }),
     makeOrder({
       id: 'ord-2610003',
-      orderNumber: 'NX-2610-003',
+      orderDate: '20261022',
+      serial: 1,
+      orderNumber: '維修單-20261022-001',
       customerId: 'cus-huang',
       deviceId: 'dev-acer',
       repairKind: 'software',
@@ -236,7 +253,9 @@ export function createSeed(): Database {
     }),
     makeOrder({
       id: 'ord-2610004',
-      orderNumber: 'NX-2610-004',
+      orderDate: '20261015',
+      serial: 1,
+      orderNumber: '維修單-20261015-001',
       customerId: 'cus-zhang',
       deviceId: 'dev-thinkpad',
       repairKind: 'both',
@@ -259,7 +278,9 @@ export function createSeed(): Database {
     }),
     makeOrder({
       id: 'ord-2610005',
-      orderNumber: 'NX-2610-005',
+      orderDate: '20261026',
+      serial: 1,
+      orderNumber: '維修單-20261026-001',
       customerId: 'cus-wu',
       deviceId: 'dev-hp',
       repairKind: 'hardware',
@@ -287,7 +308,9 @@ export function createSeed(): Database {
     }),
     makeOrder({
       id: 'ord-2610006',
-      orderNumber: 'NX-2610-006',
+      orderDate: '20261028',
+      serial: 1,
+      orderNumber: '維修單-20261028-001',
       customerId: 'cus-chen',
       deviceId: 'dev-diy',
       repairKind: 'software',
@@ -308,7 +331,9 @@ export function createSeed(): Database {
     }),
     makeOrder({
       id: 'ord-2610007',
-      orderNumber: 'NX-2610-007',
+      orderDate: '20261025',
+      serial: 1,
+      orderNumber: '維修單-20261025-001',
       customerId: 'cus-lin',
       deviceId: 'dev-imac',
       repairKind: 'hardware',
@@ -337,7 +362,9 @@ export function createSeed(): Database {
     }),
     makeOrder({
       id: 'ord-2610008',
-      orderNumber: 'NX-2610-008',
+      orderDate: '20261008',
+      serial: 1,
+      orderNumber: '維修單-20261008-001',
       customerId: 'cus-zhang',
       deviceId: 'dev-benq',
       repairKind: 'hardware',
@@ -358,6 +385,29 @@ export function createSeed(): Database {
         log('log-2610008-3', '2026-10-10T17:30:00+08:00', '許安晴', '韌體與校色已完成，客戶已取回。', true, 'status'),
       ],
     }),
+    makeOrder({
+      id: 'ord-2610009',
+      orderDate: '20261028',
+      serial: 2,
+      orderNumber: '維修單-20261028-002',
+      customerId: 'cus-zhang',
+      deviceId: 'dev-thinkpad',
+      repairKind: 'hardware',
+      repairTarget: '外接滑鼠時好時壞',
+      requirements: '下午會來取筆電，滑鼠可先換一顆店內備用。',
+      status: 'received',
+      createdAt: '2026-10-28T15:10:00+08:00',
+      logs: [
+        log('log-2610009-1', '2026-10-28T15:12:00+08:00', '林可恩', '已受理。先更換接收器測試。', true),
+        log(
+          'log-2610009-2',
+          '2026-10-28T15:40:00+08:00',
+          '許安晴',
+          '裝置管理員顯示 USB 裝置反覆重連。\npowercfg /devicequery wake_armed\n先不重灌，改接店內接收器後指標穩定。',
+          false,
+        ),
+      ],
+    }),
   ];
 
   const db: Database = { version: 1, customers, devices, orders };
@@ -366,10 +416,27 @@ export function createSeed(): Database {
 }
 
 function assertSeed(db: Database) {
+  const employees = new Set<string>();
+  for (const customer of db.customers) {
+    if (!isEmployeeNumber(customer.employeeNumber)) throw new Error(`公號不正確：${customer.name}`);
+    if (employees.has(customer.employeeNumber)) throw new Error(`公號重複：${customer.employeeNumber}`);
+    employees.add(customer.employeeNumber);
+    if (!isNtAccount(customer.ntAccount)) throw new Error(`NT 帳號不正確：${customer.name}`);
+  }
   const orderNumbers = new Set<string>();
+  const daySerial = new Set<string>();
   for (const order of db.orders) {
     if (orderNumbers.has(order.orderNumber)) throw new Error(`單號重複：${order.orderNumber}`);
     orderNumbers.add(order.orderNumber);
+    if (order.orderNumber !== formatOrderNumber(order.orderDate, order.serial)) {
+      throw new Error(`單號格式不符：${order.orderNumber}`);
+    }
+    if (order.orderDate !== taipeiCalendar(new Date(order.createdAt)).compact) {
+      throw new Error(`單號日期與建立時間不符：${order.orderNumber}`);
+    }
+    const key = `${order.orderDate}:${order.serial}`;
+    if (daySerial.has(key)) throw new Error(`當日序號重複：${key}`);
+    daySerial.add(key);
     if (!db.customers.some((customer) => customer.id === order.customerId)) {
       throw new Error(`維修單缺少客戶：${order.orderNumber}`);
     }
