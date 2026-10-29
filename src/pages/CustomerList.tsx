@@ -29,7 +29,7 @@ export function CustomerListPage() {
           <thead>
             <tr>
               <th scope="col">客戶</th>
-              <th scope="col">公號</th>
+              <th scope="col">工號</th>
               <th scope="col">NT 帳號</th>
               <th scope="col">電話</th>
               <th scope="col">設備</th>
@@ -48,7 +48,7 @@ export function CustomerListPage() {
                     <strong>{customer.name}</strong>
                     {customer.note ? <span className="muted tiny">{customer.note}</span> : null}
                   </td>
-                  <td data-label="公號" className="mono">
+                  <td data-label="工號" className="mono">
                     {customer.employeeNumber}
                   </td>
                   <td data-label="NT 帳號" className="mono">

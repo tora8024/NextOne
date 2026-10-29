@@ -22,7 +22,7 @@ export function formatOrderSerial(serial: number): string {
 
 export function formatOrderNumber(orderDate: string, serial: number): string {
   if (!/^\d{8}$/.test(orderDate)) throw new Error('單號日期不正確');
-  return `維修單-${orderDate}-${formatOrderSerial(serial)}`;
+  return `WO-${orderDate}-${formatOrderSerial(serial)}`;
 }
 
 export function isEmployeeNumber(value: string): boolean {
@@ -44,7 +44,7 @@ export function ntSam(value: string): string {
 
 export function parseFullOrderNumber(value: string): { orderDate: string; serial: number } | null {
   const normalized = toHalfWidth(value).trim();
-  const match = /^維修單-(\d{8})-(\d+)$/.exec(normalized);
+  const match = /^wo-(\d{8})-(\d+)$/i.exec(normalized);
   if (!match?.[1] || !match[2]) return null;
   const serial = Number(match[2]);
   if (!Number.isInteger(serial) || serial < 1) return null;

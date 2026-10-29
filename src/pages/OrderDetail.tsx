@@ -24,7 +24,7 @@ export function OrderDetailPage() {
   usePageTitle(order?.orderNumber ?? '找不到維修單');
 
   useEffect(() => {
-    setNotice(created ? '維修單已建立。客戶可用公號、NT 帳號或完整單號查詢。' : '');
+    setNotice(created ? '維修單已建立。客戶可用工號、NT 帳號或完整單號查詢。' : '');
     setDraft('');
     setLogError('');
   }, [orderId, location.key, created]);
@@ -202,7 +202,7 @@ export function OrderDetailPage() {
                 <p className="side-title">
                   <Link to={`/customers/${customer.id}`}>{customer.name}</Link>
                 </p>
-                <p className="mono">公號 {customer.employeeNumber}</p>
+                <p className="mono">工號 {customer.employeeNumber}</p>
                 <p className="mono">{customer.ntAccount}</p>
                 <p className="mono">{formatPhone(customer.phone)}</p>
                 {customer.email ? <p>{customer.email}</p> : null}

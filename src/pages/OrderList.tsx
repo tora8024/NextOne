@@ -54,7 +54,7 @@ export function OrderListPage() {
     const token = toHalfWidth(number).trim();
     const numberReady = !token || /^\d+$/.test(token) || parseFullOrderNumber(token) != null;
     if (!numberReady) {
-      setNumberHint('完整單號請輸入到 維修單-YYYYMMDD-NNN，流水號則只輸入數字。');
+      setNumberHint('完整單號請輸入到 WO-YYYYMMDD-NNN，流水號則只輸入數字。');
       return;
     }
     setNumberHint('');
@@ -87,7 +87,7 @@ export function OrderListPage() {
       <PageHeader
         kicker="追蹤"
         title="維修單"
-        lede="可用公號、NT 帳號、建立日期，或完整單號查詢。公號也會比對當天流水號。"
+        lede="可用工號、NT 帳號、建立日期，或完整單號查詢。工號也會比對當天流水號。"
         actions={
           <Link className="btn btn-primary" to="/orders/new">
             建立維修單
@@ -136,8 +136,8 @@ export function OrderListPage() {
       </div>
       <div className="toolbar">
         <label className="field">
-          <span>公號或單號</span>
-          <input value={number} onChange={(event) => updateParam('number', event.target.value)} placeholder="100002 或 維修單-20261024-001" inputMode="text" />
+          <span>工號或單號</span>
+          <input value={number} onChange={(event) => updateParam('number', event.target.value)} placeholder="100002 或 WO-20261024-001" inputMode="text" />
         </label>
         <label className="field">
           <span>NT 帳號</span>
@@ -153,7 +153,7 @@ export function OrderListPage() {
         </label>
       </div>
       <p className="hint">
-        6 位公號會找到該員工的全部維修單，也會把數字當成當日流水號（1、001、000001 都對到 001）。流水號每天從 001 重來，所以常會跨日命中，可加上日期範圍。NT 帳號不分大小寫，網域可省略。
+        6 位工號會找到該員工的全部維修單，也會把數字當成當日流水號（1、001、000001 都對到 001）。流水號每天從 001 重來，所以常會跨日命中，可加上日期範圍。NT 帳號不分大小寫，網域可省略。
       </p>
       {numberHint ? <p className="hint">{numberHint}</p> : null}
       {searchError ? (

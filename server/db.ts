@@ -376,7 +376,7 @@ function matchingIds(db: DatabaseSync, filters: SearchFilters): { id: string; ma
   const number = toHalfWidth(filters.number ?? '').trim();
   const nt = (filters.nt ?? '').trim();
   if (filters.requireIdentity && !number && !nt) {
-    throw new HttpError(400, '請輸入公號、完整單號或 NT 帳號');
+    throw new HttpError(400, '請輸入工號、完整單號或 NT 帳號');
   }
   if (nt && !isNtAccount(nt)) throw new HttpError(400, 'NT 帳號格式不正確，例如 CORP\\chenghan 或 chenghan');
 
@@ -397,9 +397,9 @@ function matchingIds(db: DatabaseSync, filters: SearchFilters): { id: string; ma
 
 function idsForNumber(db: DatabaseSync, number: string, from?: string, to?: string): Map<string, Set<MatchReason>> {
   const hits = new Map<string, Set<MatchReason>>();
-  if (number.startsWith('維修單')) {
+  if (/^wo-/i.test(number)) {
     const parsed = parseFullOrderNumber(number);
-    if (!parsed) throw new HttpError(400, '完整單號格式應為 維修單-YYYYMMDD-NNN');
+    if (!parsed) throw new HttpError(400, '完整單號格式應為 WO-YYYYMMDD-NNN');
     const date = dateClause('o', from, to);
     for (const row of all(
       db,
@@ -420,7 +420,7 @@ function idsForNumber(db: DatabaseSync, number: string, from?: string, to?: stri
     }
     return hits;
   }
-  if (!/^\d+$/.test(number)) throw new HttpError(400, '請輸入 6 位公號、流水號，或完整單號 維修單-YYYYMMDD-NNN');
+  if (!/^\d+$/.test(number)) throw new HttpError(400, '請輸入 6 位工號、流水號，或完整單號 WO-YYYYMMDD-NNN');
   const date = dateClause('o', from, to);
   if (isEmployeeNumber(number)) {
     for (const row of all(
@@ -528,7 +528,7 @@ function resolveCustomer(db: DatabaseSync, input: CreateOrderInput, at: string):
   const ntAccount = input.customer.ntAccount.trim();
   if (!name) throw new HttpError(400, '請填寫客戶姓名');
   if (phone.replace(/\D/g, '').length < 8) throw new HttpError(400, '請填寫有效的聯絡電話');
-  if (!isEmployeeNumber(employeeNumber)) throw new HttpError(400, '公號必須是 6 位數字');
+  if (!isEmployeeNumber(employeeNumber)) throw new HttpError(400, '工號必須是 6 位數字');
   if (!isNtAccount(ntAccount)) throw new HttpError(400, '請填寫 NT 帳號，例如 CORP\\pinyan');
   const email = input.customer.email?.trim();
   if (email && !email.includes('@')) throw new HttpError(400, '電子郵件格式不正確');
@@ -539,7 +539,7 @@ function resolveCustomer(db: DatabaseSync, input: CreateOrderInput, at: string):
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, name, phone, email || null, input.customer.note?.trim() || null, employeeNumber, ntAccount, ntSam(ntAccount), at);
   } catch (error) {
-    if (isUnique(error)) throw new HttpError(400, '這個公號已經有客戶');
+    if (isUnique(error)) throw new HttpError(400, '這個工號已經有客戶');
     throw error;
   }
   return id;

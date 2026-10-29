@@ -25,34 +25,35 @@ function reasons(orderNumber: string, filters: SearchFilters) {
 }
 
 const lin = numbers({ number: '100002' });
-assert(lin.includes('維修單-20261024-001') && lin.includes('維修單-20261025-001'), `公號應找到林承翰的兩張單：${lin.join(', ')}`);
-assert(reasons('維修單-20261024-001', { number: '100002' }).includes('employee_number'), '公號比對應標成員工編號');
+assert(lin.includes('WO-20261024-001') && lin.includes('WO-20261025-001'), `工號應找到林承翰的兩張單：${lin.join(', ')}`);
+assert(reasons('WO-20261024-001', { number: '100002' }).includes('employee_number'), '工號比對應標成員工編號');
 
 const serialOnes = numbers({ number: '1' });
 assert(serialOnes.length >= 8, `流水號 1 應跨日命中多張單，實際 ${serialOnes.length}`);
-assert(reasons('維修單-20261024-001', { number: '1' }).join() === 'order_serial', '純流水號只標當日序號');
+assert(reasons('WO-20261024-001', { number: '1' }).join() === 'order_serial', '純流水號只標當日序號');
 const padded = numbers({ number: '000001' });
-assert(padded.includes('維修單-20261024-001'), '000001 應比到流水號 001');
+assert(padded.includes('WO-20261024-001'), '000001 應比到流水號 001');
 
 const oneDay = numbers({ number: '1', from: '2026-10-24', to: '2026-10-24' });
-assert(oneDay.length === 1 && oneDay[0] === '維修單-20261024-001', `日期應縮小流水號結果：${oneDay.join(', ')}`);
+assert(oneDay.length === 1 && oneDay[0] === 'WO-20261024-001', `日期應縮小流水號結果：${oneDay.join(', ')}`);
 
-const exact = numbers({ number: '維修單-20261028-002' });
-assert(exact.length === 1 && exact[0] === '維修單-20261028-002', '完整單號應精準命中');
-assert(reasons('維修單-20261028-002', { number: '維修單-20261028-2' }).includes('order_number'), '未補零的完整單號也應命中');
-assert(numbers({ number: '維修單-20261028-002', from: '2026-10-01', to: '2026-10-02' }).length === 0, '日期範圍應排除完整單號');
+const exact = numbers({ number: 'WO-20261028-002' });
+assert(exact.length === 1 && exact[0] === 'WO-20261028-002', '完整單號應精準命中');
+assert(reasons('WO-20261028-002', { number: 'WO-20261028-2' }).includes('order_number'), '未補零的完整單號也應命中');
+assert(numbers({ number: 'wo-20261028-002' }).length === 1, '完整單號應不分大小寫');
+assert(numbers({ number: 'WO-20261028-002', from: '2026-10-01', to: '2026-10-02' }).length === 0, '日期範圍應排除完整單號');
 
 const october28 = numbers({ from: '2026-10-28', to: '2026-10-28' });
 assert(october28.length === 2, `10/28 應有兩張單：${october28.join(', ')}`);
 
 for (const nt of ['chenghan', 'CORP\\chenghan', 'corp\\ChengHan', 'OTHER\\chenghan']) {
   const found = numbers({ nt });
-  assert(found.includes('維修單-20261024-001'), `NT ${nt} 應找到林承翰`);
-  assert(reasons('維修單-20261024-001', { nt }).includes('nt_account'), 'NT 比對應標成 NT 帳號');
+  assert(found.includes('WO-20261024-001'), `NT ${nt} 應找到林承翰`);
+  assert(reasons('WO-20261024-001', { nt }).includes('nt_account'), 'NT 比對應標成 NT 帳號');
 }
 
 const both = searchOrders(db, { number: '2', nt: 'jiahao' });
-assert(both.length === 1 && both[0]?.orderNumber === '維修單-20261028-002', `公號與 NT 同時填寫時取交集：${both.map((order) => order.orderNumber).join(', ')}`);
+assert(both.length === 1 && both[0]?.orderNumber === 'WO-20261028-002', `工號與 NT 同時填寫時取交集：${both.map((order) => order.orderNumber).join(', ')}`);
 assert(both[0]?.matches?.includes('order_serial') && both[0]?.matches?.includes('nt_account'), '交集應保留兩邊的比對來源');
 
 const today = taipeiCalendar(new Date());
@@ -66,10 +67,10 @@ const created = createOrder(db, {
   initialLogVisible: false,
   author: '林可恩',
 });
-assert(created.orderNumber === `維修單-${today.compact}-001`, `新單號應為當天 001，實際 ${created.orderNumber}`);
+assert(created.orderNumber === `WO-${today.compact}-001`, `新單號應為當天 001，實際 ${created.orderNumber}`);
 assert(created.logs.some((entry) => entry.content.includes('ping') && !entry.visibleToCustomer), '初始指令應為內部紀錄');
 const dual = searchOrders(db, { number: '000001' }).find((order) => order.id === created.id);
-assert(dual?.matches?.includes('employee_number') && dual.matches.includes('order_serial'), '6 位公號若也等於流水號，兩種來源都要標出');
+assert(dual?.matches?.includes('employee_number') && dual.matches.includes('order_serial'), '6 位工號若也等於流水號，兩種來源都要標出');
 const todayOnly = searchOrders(db, { number: '000001', from: today.ymd, to: today.ymd });
 assert(todayOnly.length === 1 && todayOnly[0]?.id === created.id, '加上當天日期後，不應再帶出其他日子的 001');
 
@@ -88,7 +89,7 @@ assert(second.serial === created.serial + 1, '同一天的下一張單應接續�
 let rejected = false;
 try {
   createOrder(db, {
-    customer: { mode: 'new', name: '壞公號', phone: '0912000222', employeeNumber: '12345', ntAccount: 'corp\\bad' },
+    customer: { mode: 'new', name: '壞工號', phone: '0912000222', employeeNumber: '12345', ntAccount: 'corp\\bad' },
     device: { mode: 'new', kind: 'laptop', brand: 'A', model: 'B' },
     repairKind: 'hardware',
     repairTarget: 'x',
@@ -100,7 +101,7 @@ try {
 } catch (error) {
   rejected = error instanceof Error && error.message.includes('6 位');
 }
-assert(rejected, '不足 6 位的公號應被拒絕');
+assert(rejected, '不足 6 位的工號應被拒絕');
 
 let duplicate = false;
 try {
@@ -117,7 +118,7 @@ try {
 } catch (error) {
   duplicate = error instanceof Error && error.message.includes('已經有客戶');
 }
-assert(duplicate, '重複公號應被拒絕');
+assert(duplicate, '重複工號應被拒絕');
 
 const publicBody = JSON.stringify(searchPublic(db, { number: '100002' }));
 for (const secret of ['diskutil', 'rsync', 'smartctl', 'nvlddmkm', 'memtest', '未備份的剪輯專案']) {
@@ -132,7 +133,7 @@ let missingIdentity = false;
 try {
   searchPublic(db, { from: '2026-10-01', to: '2026-10-31' });
 } catch (error) {
-  missingIdentity = error instanceof Error && error.message.includes('公號');
+  missingIdentity = error instanceof Error && error.message.includes('工號');
 }
 assert(missingIdentity, '客戶查詢不能只靠日期');
 

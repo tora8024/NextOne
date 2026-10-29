@@ -80,7 +80,7 @@ export function OrderFormPage() {
     } else {
       if (!name.trim()) nextErrors.name = '請填寫客戶姓名';
       if (normalizePhone(phone).length < 8) nextErrors.phone = '請填寫有效的聯絡電話';
-      if (!isEmployeeNumber(toHalfWidth(employeeNumber).trim())) nextErrors.employeeNumber = '公號必須是 6 位數字';
+      if (!isEmployeeNumber(toHalfWidth(employeeNumber).trim())) nextErrors.employeeNumber = '工號必須是 6 位數字';
       if (!isNtAccount(ntAccount.trim())) nextErrors.ntAccount = '請填寫 NT 帳號，例如 CORP\\pinyan';
       if (email.trim() && !email.includes('@')) nextErrors.email = '電子郵件格式不正確';
     }
@@ -140,7 +140,7 @@ export function OrderFormPage() {
       <PageHeader
         kicker="受理"
         title="建立維修單"
-        lede="新客戶要填 6 位數公號與 NT 帳號。單號依台北時間當天自動編號，例如 維修單-20261029-001，隔日從 001 重新開始。"
+        lede="新客戶要填 6 位數工號與 NT 帳號。單號依台北時間當天自動編號，例如 WO-20261029-001，隔日從 001 重新開始。"
       />
       {errors.form ? (
         <p className="form-error" role="alert">
@@ -176,7 +176,7 @@ export function OrderFormPage() {
             {errors.customer ? <span className="field-error">{errors.customer}</span> : null}
             {selectedCustomer ? (
               <span className="hint">
-                公號 {selectedCustomer.employeeNumber} · {selectedCustomer.ntAccount}
+                工號 {selectedCustomer.employeeNumber} · {selectedCustomer.ntAccount}
                 {selectedCustomer.note ? ` · ${selectedCustomer.note}` : ''}
               </span>
             ) : null}
@@ -194,7 +194,7 @@ export function OrderFormPage() {
               {errors.phone ? <span className="field-error">{errors.phone}</span> : null}
             </label>
             <label className="field">
-              <span>公號</span>
+              <span>工號</span>
               <input value={employeeNumber} onChange={(event) => setEmployeeNumber(event.target.value)} inputMode="numeric" maxLength={6} placeholder="6 位數字，例如 100006" />
               {errors.employeeNumber ? <span className="field-error">{errors.employeeNumber}</span> : null}
             </label>

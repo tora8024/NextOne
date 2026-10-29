@@ -151,7 +151,7 @@ export function createSeed(): Database {
       id: 'ord-2610001',
       orderDate: '20261027',
       serial: 1,
-      orderNumber: '維修單-20261027-001',
+      orderNumber: 'WO-20261027-001',
       customerId: 'cus-chen',
       deviceId: 'dev-zenbook',
       repairKind: 'hardware',
@@ -180,7 +180,7 @@ export function createSeed(): Database {
       id: 'ord-2610002',
       orderDate: '20261024',
       serial: 1,
-      orderNumber: '維修單-20261024-001',
+      orderNumber: 'WO-20261024-001',
       customerId: 'cus-lin',
       deviceId: 'dev-macbook',
       repairKind: 'hardware',
@@ -224,7 +224,7 @@ export function createSeed(): Database {
       id: 'ord-2610003',
       orderDate: '20261022',
       serial: 1,
-      orderNumber: '維修單-20261022-001',
+      orderNumber: 'WO-20261022-001',
       customerId: 'cus-huang',
       deviceId: 'dev-acer',
       repairKind: 'software',
@@ -255,7 +255,7 @@ export function createSeed(): Database {
       id: 'ord-2610004',
       orderDate: '20261015',
       serial: 1,
-      orderNumber: '維修單-20261015-001',
+      orderNumber: 'WO-20261015-001',
       customerId: 'cus-zhang',
       deviceId: 'dev-thinkpad',
       repairKind: 'both',
@@ -280,7 +280,7 @@ export function createSeed(): Database {
       id: 'ord-2610005',
       orderDate: '20261026',
       serial: 1,
-      orderNumber: '維修單-20261026-001',
+      orderNumber: 'WO-20261026-001',
       customerId: 'cus-wu',
       deviceId: 'dev-hp',
       repairKind: 'hardware',
@@ -310,7 +310,7 @@ export function createSeed(): Database {
       id: 'ord-2610006',
       orderDate: '20261028',
       serial: 1,
-      orderNumber: '維修單-20261028-001',
+      orderNumber: 'WO-20261028-001',
       customerId: 'cus-chen',
       deviceId: 'dev-diy',
       repairKind: 'software',
@@ -333,7 +333,7 @@ export function createSeed(): Database {
       id: 'ord-2610007',
       orderDate: '20261025',
       serial: 1,
-      orderNumber: '維修單-20261025-001',
+      orderNumber: 'WO-20261025-001',
       customerId: 'cus-lin',
       deviceId: 'dev-imac',
       repairKind: 'hardware',
@@ -364,7 +364,7 @@ export function createSeed(): Database {
       id: 'ord-2610008',
       orderDate: '20261008',
       serial: 1,
-      orderNumber: '維修單-20261008-001',
+      orderNumber: 'WO-20261008-001',
       customerId: 'cus-zhang',
       deviceId: 'dev-benq',
       repairKind: 'hardware',
@@ -389,7 +389,7 @@ export function createSeed(): Database {
       id: 'ord-2610009',
       orderDate: '20261028',
       serial: 2,
-      orderNumber: '維修單-20261028-002',
+      orderNumber: 'WO-20261028-002',
       customerId: 'cus-zhang',
       deviceId: 'dev-thinkpad',
       repairKind: 'hardware',
@@ -418,8 +418,8 @@ export function createSeed(): Database {
 function assertSeed(db: Database) {
   const employees = new Set<string>();
   for (const customer of db.customers) {
-    if (!isEmployeeNumber(customer.employeeNumber)) throw new Error(`公號不正確：${customer.name}`);
-    if (employees.has(customer.employeeNumber)) throw new Error(`公號重複：${customer.employeeNumber}`);
+    if (!isEmployeeNumber(customer.employeeNumber)) throw new Error(`工號不正確：${customer.name}`);
+    if (employees.has(customer.employeeNumber)) throw new Error(`工號重複：${customer.employeeNumber}`);
     employees.add(customer.employeeNumber);
     if (!isNtAccount(customer.ntAccount)) throw new Error(`NT 帳號不正確：${customer.name}`);
   }

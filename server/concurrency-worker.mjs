@@ -15,7 +15,7 @@ try {
     .get(workerData.orderDate);
   const serial = Number(row.last_serial);
   const padded = serial < 1000 ? String(serial).padStart(3, '0') : String(serial);
-  const orderNumber = `維修單-${workerData.orderDate}-${padded}`;
+  const orderNumber = `WO-${workerData.orderDate}-${padded}`;
   const createdOn = `${workerData.orderDate.slice(0, 4)}-${workerData.orderDate.slice(4, 6)}-${workerData.orderDate.slice(6, 8)}`;
   const stamp = new Date().toISOString();
   db.prepare(

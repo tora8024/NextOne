@@ -135,7 +135,7 @@ export function LookupPage() {
     event.preventDefault();
     if (!number.trim() && !nt.trim()) {
       setOrders(null);
-      setError('請輸入公號、完整單號或 NT 帳號');
+      setError('請輸入工號、完整單號或 NT 帳號');
       return;
     }
     setError('');
@@ -157,11 +157,11 @@ export function LookupPage() {
             <h1>查詢維修進度</h1>
           </div>
         </header>
-        <p className="lede">輸入 6 位數公號或 NT 帳號。此頁只顯示狀態與可公開的進度，不含店內檢測指令。</p>
+        <p className="lede">輸入 6 位數工號或 NT 帳號。此頁只顯示狀態與可公開的進度，不含店內檢測指令。</p>
 
         <form id="lookup-form" className="panel" onSubmit={onSubmit} noValidate>
           <label className="field">
-            <span>公號或完整單號</span>
+            <span>工號或完整單號</span>
             <input
               value={number}
               onChange={(event) => {
@@ -169,7 +169,7 @@ export function LookupPage() {
                 setOrders(null);
                 setError('');
               }}
-              placeholder="100002 或 維修單-20261024-001"
+              placeholder="100002 或 WO-20261024-001"
               autoComplete="off"
               spellCheck={false}
             />
@@ -207,9 +207,9 @@ export function LookupPage() {
             {pending ? '查詢中…' : '查詢進度'}
           </button>
           <p className="hint">
-            公號會同時找員工編號，以及維修單當天的流水號。流水號每天從 001 重來，只查 1 或 001 可能看到很多天；可加上日期。示範：
+            工號會同時找員工編號，以及維修單當天的流水號。流水號每天從 001 重來，只查 1 或 001 可能看到很多天；可加上日期。示範：
             <button type="button" className="text-btn" onClick={() => runQuery({ number: '100002', nt: '', from: '', to: '' })}>
-              公號 100002
+              工號 100002
             </button>
             、
             <button type="button" className="text-btn" onClick={() => runQuery({ number: '', nt: 'chenghan', from: '', to: '' })}>
@@ -226,7 +226,7 @@ export function LookupPage() {
         {orders && orders.length === 0 && !error ? (
           <div className="panel empty-state">
             <h2>查無符合的維修單</h2>
-            <p>請再核對公號、NT 帳號或日期。流水號若沒有搭配日期，不同天的 001 都會出現。</p>
+            <p>請再核對工號、NT 帳號或日期。流水號若沒有搭配日期，不同天的 001 都會出現。</p>
           </div>
         ) : null}
 

@@ -47,7 +47,7 @@ export function CustomerDetailPage() {
         <section className="panel">
           <h2>聯絡方式</h2>
           <dl className="meta">
-            <dt>公號</dt>
+            <dt>工號</dt>
             <dd className="mono">{customer.employeeNumber}</dd>
             <dt>NT 帳號</dt>
             <dd className="mono">{customer.ntAccount}</dd>
