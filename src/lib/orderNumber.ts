@@ -51,6 +51,24 @@ export function parseFullOrderNumber(value: string): { orderDate: string; serial
   return { orderDate: match[1], serial };
 }
 
+/** Full work-order number only: 維修單-YYYYMMDD-NNN or WO-YYYYMMDD-NNN, with the serial padded. */
+export function canonicalWorkOrderNumber(value: string): string | null {
+  const normalized = toHalfWidth(value).trim();
+  const match = /^(?:維修單|WO)-(\d{8})-(\d+)$/i.exec(normalized);
+  if (!match?.[1] || !match[2]) return null;
+  const serial = Number(match[2]);
+  if (!Number.isInteger(serial) || serial < 1 || serial > 1_000_000_000) return null;
+  let canonical: string;
+  try {
+    canonical = formatOrderNumber(match[1], serial);
+  } catch {
+    return null;
+  }
+  const wo = `WO-${match[1]}-${formatOrderSerial(serial)}`;
+  if (normalized !== canonical && normalized.toUpperCase() !== wo) return null;
+  return canonical;
+}
+
 export function parseSerialToken(value: string): number | null {
   const normalized = toHalfWidth(value).trim();
   if (!/^\d+$/.test(normalized) || normalized.length > 9) return null;

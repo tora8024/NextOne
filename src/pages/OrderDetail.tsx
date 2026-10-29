@@ -2,7 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { StatusBadge } from '../components/StatusBadge';
 import { deviceLabel, formatDateTime, formatPhone } from '../lib/format';
-import { usePageTitle, useTechnician } from '../lib/hooks';
+import { usePageTitle } from '../lib/hooks';
 import { REPAIR_KIND_LABEL, STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
 import { useDatabase, useStore } from '../lib/store';
 import type { RepairStatus } from '../types';
@@ -11,8 +11,7 @@ export function OrderDetailPage() {
   const { orderId } = useParams();
   const location = useLocation();
   const db = useDatabase();
-  const { updateStatus, addLog } = useStore();
-  const [author, setAuthor] = useTechnician();
+  const { updateStatus, addLog, user } = useStore();
   const order = db.orders.find((item) => item.id === orderId);
   const customer = db.customers.find((item) => item.id === order?.customerId);
   const device = db.devices.find((item) => item.id === order?.deviceId);
@@ -24,7 +23,7 @@ export function OrderDetailPage() {
   usePageTitle(order?.orderNumber ?? '找不到維修單');
 
   useEffect(() => {
-    setNotice(created ? '維修單已建立。客戶可用公號、NT 帳號或完整單號查詢。' : '');
+    setNotice(created ? '維修單已建立。客戶需用完整單號與電話末四碼查詢。' : '');
     setDraft('');
     setLogError('');
   }, [orderId, location.key, created]);
@@ -52,7 +51,7 @@ export function OrderDetailPage() {
   async function changeStatus(status: RepairStatus) {
     if (!order || status === order.status) return;
     try {
-      await updateStatus(order.id, status, author);
+      await updateStatus(order.id, status);
       setNotice(`狀態已更新為「${STATUS_LABEL[status]}」。客戶查詢頁會看到這次變更。`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '無法更新狀態');
@@ -67,7 +66,7 @@ export function OrderDetailPage() {
       return;
     }
     try {
-      await addLog(order.id, { author, content: draft, visibleToCustomer });
+      await addLog(order.id, { content: draft, visibleToCustomer });
       setDraft('');
       setLogError('');
       setNotice(visibleToCustomer ? '已加入處理紀錄，客戶查詢頁看得到。' : '已加入內部處理紀錄。');
@@ -111,10 +110,7 @@ export function OrderDetailPage() {
       <section className="panel">
         <div className="section-head">
           <h2>狀態</h2>
-          <label className="inline-field">
-            紀錄人
-            <input value={author} onChange={(event) => setAuthor(event.target.value)} maxLength={40} />
-          </label>
+          <p className="hint">紀錄人：{user?.username ?? '登入帳號'}</p>
         </div>
         <div className="status-switch" role="group" aria-label="更新狀態">
           {STATUS_ORDER.map((status) => (

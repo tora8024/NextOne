@@ -18,7 +18,7 @@ export function DashboardPage() {
       <PageHeader
         kicker="工作台"
         title="總覽"
-        lede={`${formatLongDate(new Date())}。設備與維修單存在這台電腦的 SQLite，手機連上這個網址就能查到同一份進度。側邊欄可還原示範資料。`}
+        lede={`${formatLongDate(new Date())}。設備與維修單存在這台電腦的 SQLite。客戶要用完整單號與電話末四碼查詢。管理員可在側邊欄還原示範資料。`}
         actions={
           <Link className="btn btn-primary" to="/orders/new">
             建立維修單

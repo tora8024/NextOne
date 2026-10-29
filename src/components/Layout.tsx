@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from '../lib/store';
+import { LoginPage } from '../pages/Login';
 import { IconClipboard, IconDevice, IconHome, IconPeople, IconPlus, IconSearch } from './Icons';
 
 const NAV = [
@@ -21,10 +22,11 @@ function activeId(pathname: string): string {
 }
 
 export function AdminLayout() {
-  const { db, error, resetDemo } = useStore();
+  const { db, error, user, phase, resetDemo, logout } = useStore();
   const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [resetError, setResetError] = useState('');
   const current = activeId(location.pathname);
   const openCount = db?.orders.filter((order) => order.status !== 'completed').length ?? 0;
 
@@ -35,6 +37,26 @@ export function AdminLayout() {
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [location.pathname]);
+
+  if (phase === 'loading') {
+    return (
+      <main className="lookup-page">
+        <p className="empty">正在確認登入狀態…</p>
+      </main>
+    );
+  }
+  if (!user) {
+    return (
+      <>
+        {error ? (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <LoginPage />
+      </>
+    );
+  }
 
   return (
     <div className="shell">
@@ -62,20 +84,40 @@ export function AdminLayout() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          <p className="who">
+            {user.username} · {user.role === 'admin' ? '管理員' : '櫃檯人員'}
+          </p>
           <Link className="nav-link" to="/lookup" target="_blank" rel="noreferrer">
             <IconSearch />
             <span>客戶查詢頁</span>
           </Link>
+          {user.role === 'admin' ? (
+            <button
+              type="button"
+              className="reset-btn"
+              onClick={() => {
+                const ok = window.confirm('還原後，資料庫裡的維修資料會被示範資料覆蓋。確定要還原嗎？');
+                if (!ok) return;
+                setResetError('');
+                void resetDemo()
+                  .then(() => navigate('/'))
+                  .catch((reason: unknown) => {
+                    setResetError(reason instanceof Error ? reason.message : '無法還原示範資料');
+                  });
+              }}
+            >
+              還原示範資料
+            </button>
+          ) : null}
+          {resetError ? <p className="sidebar-error">{resetError}</p> : null}
           <button
             type="button"
             className="reset-btn"
             onClick={() => {
-              const ok = window.confirm('還原後，資料庫裡的維修資料會被示範資料覆蓋。確定要還原嗎？');
-              if (!ok) return;
-              void resetDemo().then(() => navigate('/'));
+              void logout();
             }}
           >
-            還原示範資料
+            登出
           </button>
         </div>
       </aside>

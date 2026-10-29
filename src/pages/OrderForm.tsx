@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { PageHeader } from '../components/PageHeader';
 import { normalizePhone } from '../lib/format';
-import { usePageTitle, useTechnician } from '../lib/hooks';
+import { usePageTitle } from '../lib/hooks';
 import { DEVICE_KIND_LABEL, DEVICE_KINDS, REPAIR_KIND_LABEL, REPAIR_KINDS } from '../lib/labels';
 import { isEmployeeNumber, isNtAccount, toHalfWidth } from '../lib/orderNumber';
 import { useDatabase, useStore } from '../lib/store';
@@ -10,9 +10,8 @@ import type { DeviceKind, RepairKind } from '../types';
 
 export function OrderFormPage() {
   const db = useDatabase();
-  const { createOrder } = useStore();
+  const { createOrder, user } = useStore();
   const navigate = useNavigate();
-  const [author, setAuthor] = useTechnician();
   usePageTitle('建立維修單');
 
   const [params] = useSearchParams();
@@ -125,7 +124,7 @@ export function OrderFormPage() {
         requirements,
         initialLog,
         initialLogVisible,
-        author,
+        author: user?.username ?? '',
       });
       navigate(`/orders/${order.id}`, { state: { created: true } });
     } catch (error) {
@@ -307,10 +306,7 @@ export function OrderFormPage() {
 
       <section className="panel">
         <h2>初步處理紀錄</h2>
-        <label className="field">
-          <span>紀錄人</span>
-          <input value={author} onChange={(event) => setAuthor(event.target.value)} maxLength={40} />
-        </label>
+        <p className="hint">處理紀錄會記在登入帳號 {user?.username ?? ''} 名下。</p>
         <label className="field">
           <span>檢測指令或處理事項（選填）</span>
           <textarea

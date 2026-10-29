@@ -18,6 +18,11 @@ export function formatPhone(phone: string): string {
   return phone.trim();
 }
 
+export function phoneLast4(phone: string): string {
+  const digits = normalizePhone(phone);
+  return digits.length >= 4 ? digits.slice(-4) : '';
+}
+
 export function maskPhone(phone: string): string {
   const digits = normalizePhone(phone);
   if (digits.length >= 8) {
