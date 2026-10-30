@@ -6,13 +6,18 @@ type Lock = { failures: number; lockedUntil: number; updatedAt: number };
 
 const DEFAULT_MAX_KEYS = 10_000;
 
-function remember<T>(map: Map<string, T>, key: string, value: T, maxKeys: number) {
+function remember<T>(map: Map<string, T>, key: string, value: T, maxKeys: number, canEvict?: (entry: T) => boolean) {
   if (map.has(key)) map.delete(key);
   map.set(key, value);
   while (map.size > maxKeys) {
-    const oldest = map.keys().next().value;
-    if (oldest === undefined) break;
-    map.delete(oldest);
+    let victim: string | undefined;
+    for (const [candidate, entry] of map) {
+      if (canEvict && !canEvict(entry)) continue;
+      victim = candidate;
+      break;
+    }
+    if (victim === undefined) break;
+    map.delete(victim);
   }
 }
 
@@ -92,7 +97,7 @@ export function createLockout(options: { limit: () => number; lockMs: () => numb
       const current = locks.get(key);
       if (!current?.lockedUntil) return false;
       if (current.lockedUntil > now) {
-        remember(locks, key, current, maxKeys());
+        remember(locks, key, current, maxKeys(), (entry) => !(entry.lockedUntil > now));
         return true;
       }
       locks.delete(key);
@@ -102,16 +107,16 @@ export function createLockout(options: { limit: () => number; lockMs: () => numb
       if (now - lastPurge >= 30_000) this.purge(now);
       const current = locks.get(key);
       if (current && current.lockedUntil > now) {
-        remember(locks, key, current, maxKeys());
+        remember(locks, key, current, maxKeys(), (entry) => !(entry.lockedUntil > now));
         return true;
       }
       const expired = Boolean(current && current.lockedUntil > 0 && current.lockedUntil <= now);
       const failures = (expired ? 0 : (current?.failures ?? 0)) + 1;
       if (failures >= options.limit()) {
-        remember(locks, key, { failures: 0, lockedUntil: now + options.lockMs(), updatedAt: now }, maxKeys());
+        remember(locks, key, { failures: 0, lockedUntil: now + options.lockMs(), updatedAt: now }, maxKeys(), (entry) => !(entry.lockedUntil > now));
         return true;
       }
-      remember(locks, key, { failures, lockedUntil: 0, updatedAt: now }, maxKeys());
+      remember(locks, key, { failures, lockedUntil: 0, updatedAt: now }, maxKeys(), (entry) => !(entry.lockedUntil > now));
       return false;
     },
     succeed(key: string) {
@@ -145,12 +150,51 @@ export function createLockout(options: { limit: () => number; lockMs: () => numb
   };
 }
 
+type DelayState = { failures: number; until: number };
+
+export function progressiveDelayMs(failures: number, baseMs: number, capMs: number): number {
+  if (failures <= 0 || baseMs <= 0) return 0;
+  const exponent = Math.min(failures - 1, 16);
+  return Math.min(capMs, Math.max(1, baseMs * 2 ** exponent));
+}
+
+export function createProgressDelay(options: { baseMs: () => number; capMs: () => number; maxKeys?: () => number }) {
+  const entries = new Map<string, DelayState>();
+  const maxKeys = () => options.maxKeys?.() ?? intEnv('REPAIR_LIMIT_MAX_KEYS', DEFAULT_MAX_KEYS);
+  return {
+    pendingMs(key: string, now = Date.now()): number {
+      const current = entries.get(key);
+      if (!current || current.until <= now) return 0;
+      return current.until - now;
+    },
+    retryAfter(key: string, now = Date.now()): number {
+      const waiting = this.pendingMs(key, now);
+      if (waiting <= 0) return 0;
+      return Math.max(1, Math.ceil(waiting / 1000));
+    },
+    fail(key: string, now = Date.now()): number {
+      const failures = (entries.get(key)?.failures ?? 0) + 1;
+      const delay = progressiveDelayMs(failures, options.baseMs(), options.capMs());
+      remember(entries, key, { failures, until: now + delay }, maxKeys());
+      return delay;
+    },
+    succeed(key: string) {
+      entries.delete(key);
+    },
+    reset() {
+      entries.clear();
+    },
+    size() {
+      return entries.size;
+    },
+  };
+}
+
 export function purgeLimitMaps(now = Date.now()) {
   generalLimiter.purge(now);
   lookupLimiter.purge(now);
   loginLimiter.purge(now);
   loginLockout.purge(now);
-  loginAccountLockout.purge(now);
   lookupLockout.purge(now);
 }
 
@@ -174,10 +218,14 @@ export const loginLockout = createLockout({
   lockMs: () => intEnv('REPAIR_LOGIN_LOCKOUT_MS', 15 * 60_000),
 });
 
-/** Failures for one account from every address. Higher than the per-address lock so a few remote failures cannot lock out the real user. */
-export const loginAccountLockout = createLockout({
-  limit: () => intEnv('REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT', 20),
-  lockMs: () => intEnv('REPAIR_LOGIN_ACCOUNT_LOCKOUT_MS', intEnv('REPAIR_LOGIN_LOCKOUT_MS', 15 * 60_000)),
+export const loginProgress = createProgressDelay({
+  baseMs: () => intEnv('REPAIR_LOGIN_PROGRESS_BASE_MS', 1_000),
+  capMs: () => intEnv('REPAIR_LOGIN_PROGRESS_CAP_MS', 15 * 60_000),
+});
+
+export const lookupProgress = createProgressDelay({
+  baseMs: () => intEnv('REPAIR_LOOKUP_PROGRESS_BASE_MS', 1_000),
+  capMs: () => intEnv('REPAIR_LOOKUP_PROGRESS_CAP_MS', 15 * 60_000),
 });
 
 export const lookupLockout = createLockout({

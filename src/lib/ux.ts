@@ -1,4 +1,4 @@
-export const PASSWORD_RULE = '8 到 200 個字，不能與目前密碼相同';
+export const PASSWORD_RULE = '12 到 200 個字，不能與目前密碼相同';
 export const INITIAL_PASSWORD_HINT = '第一次登入時，目前密碼是初始密碼。';
 export const LOOKUP_NUMBER_HELP = '單號印在送修單上';
 export const LOOKUP_PHONE_PLACEHOLDER = '例：1234';

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { usePageTitle } from '../lib/hooks';
 import { useStore } from '../lib/store';
+import { isCommonPassword } from '../lib/common-passwords';
 import { INITIAL_PASSWORD_HINT, PASSWORD_RULE, PASSWORD_UPDATED } from '../lib/ux';
 
 export function ChangePasswordPage() {
@@ -16,8 +17,12 @@ export function ChangePasswordPage() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (newPassword.length < 8) {
-      setError('新密碼至少要 8 個字');
+    if (newPassword.length < 12) {
+      setError('新密碼至少要 12 個字');
+      return;
+    }
+    if (isCommonPassword(newPassword)) {
+      setError('請換一個不容易猜到的密碼');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -69,7 +74,7 @@ export function ChangePasswordPage() {
               value={newPassword}
               onChange={(event) => setNewPassword(event.target.value)}
               autoComplete="new-password"
-              minLength={8}
+              minLength={12}
               required
             />
           </label>
@@ -80,7 +85,7 @@ export function ChangePasswordPage() {
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
               autoComplete="new-password"
-              minLength={8}
+              minLength={12}
               required
             />
           </label>

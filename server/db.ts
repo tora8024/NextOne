@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from 'node:sqlite';
 import { createSeed } from '../src/data/seed.ts';
+import { isCommonPassword } from '../src/lib/common-passwords.ts';
 import { deviceLabel, maskPhone, maskSerial, phoneLast4 } from '../src/lib/format.ts';
 import { STATUS_LABEL } from '../src/lib/labels.ts';
 import {
@@ -270,7 +271,8 @@ export function resetSeed(db: DatabaseSync): SeededAdmin | null {
 export function createUser(db: DatabaseSync, input: { username: string; password: string; role: UserRole }) {
   const username = input.username.trim();
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) throw new HttpError(400, '帳號格式不正確');
-  if (input.password.length < 8 || input.password.length > 200) throw new HttpError(400, '密碼長度不正確');
+  if (input.password.length < 12 || input.password.length > 200) throw new HttpError(400, '密碼長度不正確');
+  if (isCommonPassword(input.password)) throw new HttpError(400, '請換一個不容易猜到的密碼');
   if (input.role !== 'admin' && input.role !== 'staff') throw new HttpError(400, '角色不正確');
   try {
     db.prepare('INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
@@ -292,7 +294,8 @@ function ensureDefaultAdmin(db: DatabaseSync): SeededAdmin | null {
   const fromEnv = process.env.REPAIR_ADMIN_PASSWORD;
   let password: string;
   if (fromEnv !== undefined && fromEnv.length > 0) {
-    if (fromEnv.length < 8 || fromEnv.length > 200) throw new HttpError(500, 'REPAIR_ADMIN_PASSWORD 長度不正確');
+    if (fromEnv.length < 12 || fromEnv.length > 200) throw new HttpError(500, 'REPAIR_ADMIN_PASSWORD 長度不正確');
+    if (isCommonPassword(fromEnv)) throw new HttpError(500, 'REPAIR_ADMIN_PASSWORD 是常見密碼');
     password = fromEnv;
     console.log('預設管理員帳號：admin');
     console.log('預設管理員密碼取自 REPAIR_ADMIN_PASSWORD，首次登入必須變更。');

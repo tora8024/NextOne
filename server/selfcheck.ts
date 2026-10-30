@@ -7,6 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
 import type { Database, RepairOrder, SessionUser } from '../src/types.ts';
+import { isCommonPassword } from '../src/lib/common-passwords.ts';
 import { canonicalWorkOrderNumber, taipeiCalendar } from '../src/lib/orderNumber.ts';
 import {
   INITIAL_PASSWORD_HINT,
@@ -25,11 +26,11 @@ import {
   statusConfirmText,
 } from '../src/lib/ux.ts';
 import { createSession, purgeExpiredSessions, readSession } from './auth.ts';
-import { backupDatabase } from './backup.ts';
+import { backupDatabase, verifyBackupFile } from './backup.ts';
 import { createOrder, createUser, explainPlan, openDatabase, resetSeed, searchOrders, searchPublic, type SearchFilters } from './db.ts';
 import { startServer } from './index.ts';
 import { databasePath } from './paths.ts';
-import { bucketIp, clientIp, createLockout, createRateLimiter, generalLimiter, loginAccountLockout, loginLimiter, loginLockout, lookupLimiter, lookupLockout } from './rate-limit.ts';
+import { bucketIp, clientIp, createLockout, createProgressDelay, createRateLimiter, generalLimiter, loginLimiter, loginLockout, loginProgress, lookupLimiter, lookupLockout, lookupProgress, progressiveDelayMs } from './rate-limit.ts';
 
 const filename = path.join(os.tmpdir(), `repair-selfcheck-${process.pid}.sqlite`);
 fs.rmSync(filename, { force: true });
@@ -67,6 +68,37 @@ assert(!envLogs.some((line) => line.includes('env-admin-password')), '環境變�
 assert(!fs.existsSync(`${envFile}.admin-password`), '有環境變數時不應再寫密碼檔');
 delete process.env.REPAIR_ADMIN_PASSWORD;
 envDb.close();
+const commonFile = path.join(os.tmpdir(), `repair-selfcheck-common-${process.pid}.sqlite`);
+fs.rmSync(commonFile, { force: true });
+const commonDb = openDatabase(commonFile);
+process.env.REPAIR_ADMIN_PASSWORD = 'password1234';
+let commonEnvRejected = false;
+try {
+  resetSeed(commonDb);
+} catch (error) {
+  commonEnvRejected = error instanceof Error && error.message.includes('常見密碼');
+}
+delete process.env.REPAIR_ADMIN_PASSWORD;
+commonDb.close();
+fs.rmSync(commonFile, { force: true });
+fs.rmSync(`${commonFile}-wal`, { force: true });
+fs.rmSync(`${commonFile}-shm`, { force: true });
+assert(commonEnvRejected, '常見的 REPAIR_ADMIN_PASSWORD 應被拒絕');
+let shortPassword = false;
+try {
+  createUser(db, { username: 'short-user', password: '12345678901', role: 'staff' });
+} catch (error) {
+  shortPassword = error instanceof Error && error.message.includes('長度');
+}
+assert(shortPassword, '新帳號密碼少於 12 字應被拒絕');
+let commonUser = false;
+try {
+  createUser(db, { username: 'common-user', password: 'Password1234', role: 'staff' });
+} catch (error) {
+  commonUser = error instanceof Error && error.message.includes('不容易猜到');
+}
+assert(commonUser, '新帳號不應使用常見密碼');
+assert(isCommonPassword('password1234') && !isCommonPassword('replacement-pass-1'), '常見密碼清單應區分弱密碼與自訂密碼');
 fs.rmSync(envFile, { force: true });
 fs.rmSync(`${envFile}-wal`, { force: true });
 fs.rmSync(`${envFile}-shm`, { force: true });
@@ -91,7 +123,7 @@ assert(relativeRejected, '相對資料庫路徑應被拒絕');
 assert(bucketIp('2001:db8:1:2::1') === bucketIp('2001:db8:1:2:ffff::9'), '同一個 IPv6 /64 應共用配額');
 assert(bucketIp('2001:db8:1:2::1') !== bucketIp('2001:db8:1:3::1'), '不同 IPv6 /64 應分開計算');
 assert(bucketIp('::ffff:203.0.113.8') === '203.0.113.8', 'IPv4-mapped 位址應還原成 IPv4');
-assert(PASSWORD_RULE === '8 到 200 個字，不能與目前密碼相同', '變更密碼說明應使用指定文字');
+assert(PASSWORD_RULE === '12 到 200 個字，不能與目前密碼相同', '變更密碼說明應使用指定文字');
 assert(INITIAL_PASSWORD_HINT === '第一次登入時，目前密碼是初始密碼。', '應說明目前密碼是初始密碼');
 assert(LOOKUP_NUMBER_HELP === '單號印在送修單上', '查詢說明應指出單號印在送修單上');
 assert(LOOKUP_PHONE_PLACEHOLDER === '例：1234', '電話欄位提示應為例：1234');
@@ -140,6 +172,37 @@ lockCap.fail('two', 0);
 lockCap.fail('three', 0);
 assert(lockCap.size() <= 2, `鎖定表應有上限，實際 ${lockCap.size()}`);
 assert(lockCap.fail('one', 0) === false, '被淘汰的鎖定應重新計次，而不是沿用舊次數');
+const quarterHour = 15 * 60_000;
+const quarter = createLockout({ limit: () => 1, lockMs: () => quarterHour, maxKeys: () => 10 });
+assert(quarter.fail('acct|198.51.100.1', 0) === true, '達到次數應鎖定 15 分鐘');
+assert(quarter.isLocked('acct|198.51.100.1', quarterHour - 1), '未滿 15 分鐘仍應鎖定');
+assert(quarter.retryAfter('acct|198.51.100.1', 0) === 900, '鎖定當下應回報約 15 分鐘');
+assert(!quarter.isLocked('acct|198.51.100.1', quarterHour), '滿 15 分鐘應自動解鎖');
+const keptLocks = createLockout({ limit: () => 1, lockMs: () => 60_000, maxKeys: () => 2 });
+assert(keptLocks.fail('locked-a', 0) === true, '第一筆應進入鎖定');
+assert(keptLocks.fail('locked-b', 0) === true, '第二筆應進入鎖定');
+assert(keptLocks.fail('locked-c', 0) === true, '第三筆鎖定不應被拒絕記錄');
+assert(keptLocks.size() === 3, `使用中的鎖定不應被筆數上限淘汰，實際 ${keptLocks.size()}`);
+assert(keptLocks.isLocked('locked-a', 1) && keptLocks.isLocked('locked-b', 1) && keptLocks.isLocked('locked-c', 1), '三筆鎖定都應還在');
+const mixedLocks = createLockout({ limit: () => 2, lockMs: () => 60_000, maxKeys: () => 2 });
+mixedLocks.fail('held', 0);
+assert(mixedLocks.fail('held', 1) === true, '累積後應鎖定 held');
+mixedLocks.fail('soft', 2);
+mixedLocks.fail('other', 3);
+assert(mixedLocks.isLocked('held', 3), '淘汰時應留下仍在鎖定的紀錄');
+assert(mixedLocks.fail('soft', 4) === false, '未鎖定的舊紀錄仍可被淘汰並重新計次');
+assert(progressiveDelayMs(1, 1_000, quarterHour) === 1_000, '第一次失敗應等基礎時間');
+assert(progressiveDelayMs(2, 1_000, quarterHour) === 2_000, '第二次失敗應加倍');
+assert(progressiveDelayMs(3, 1_000, quarterHour) === 4_000, '第三次失敗應再加倍');
+assert(progressiveDelayMs(30, 1_000, quarterHour) === quarterHour, '等待應有上限');
+assert(progressiveDelayMs(0, 1_000, quarterHour) === 0, '沒有失敗不應等待');
+const delays = createProgressDelay({ baseMs: () => 1_000, capMs: () => quarterHour, maxKeys: () => 10 });
+assert(delays.fail('admin', 0) === 1_000, '記錄失敗應回傳等待');
+assert(delays.pendingMs('admin', 0) === 1_000, '時間未到應仍在等待');
+assert(delays.pendingMs('admin', 1_000) === 0, '時間到了應可再試');
+assert(delays.fail('admin', 1_000) === 2_000, '再次失敗應加倍');
+delays.succeed('admin');
+assert(delays.pendingMs('admin', 1_000) === 0 && delays.fail('admin', 5_000) === 1_000, '成功後應從基礎時間重算');
 const legacyFile = path.join(os.tmpdir(), `repair-selfcheck-legacy-${process.pid}.sqlite`);
 fs.rmSync(legacyFile, { force: true });
 const legacy = new DatabaseSync(legacyFile);
@@ -386,6 +449,19 @@ const backupPath = path.join(backupDir, `repair-selfcheck-backup-${process.pid}.
 fs.rmSync(backupPath, { force: true });
 backupDatabase(db, backupPath);
 assert((fs.statSync(backupPath).mode & 0o777) === 0o600, '備份檔應為 600');
+verifyBackupFile(backupPath);
+const backupTemps = fs.readdirSync(backupDir).filter((name) => name.endsWith('.tmp'));
+assert(backupTemps.length === 0, `備份完成後不應留下暫存檔：${backupTemps.join(',')}`);
+const junkBackup = path.join(backupDir, 'junk.sqlite');
+fs.writeFileSync(junkBackup, 'not a database');
+let corruptRejected = false;
+try {
+  verifyBackupFile(junkBackup);
+} catch (error) {
+  corruptRejected = error instanceof Error && error.message.includes('完整性');
+}
+fs.rmSync(junkBackup, { force: true });
+assert(corruptRejected, '損壞的檔案應通不過完整性檢查');
 let existingRefused = false;
 try {
   backupDatabase(db, backupPath);
@@ -516,6 +592,10 @@ async function checkHttp() {
   const call = (method: string, pathname: string, body?: unknown, headers?: Record<string, string>) =>
     request(server.port, method, pathname, body, headers);
 
+  process.env.REPAIR_LOGIN_PROGRESS_BASE_MS = '15';
+  process.env.REPAIR_LOOKUP_PROGRESS_BASE_MS = '15';
+  loginProgress.reset();
+  lookupProgress.reset();
   try {
     const health = await call('GET', '/api/health');
     assert(health.status === 200, '健康檢查應可匿名');
@@ -582,6 +662,25 @@ async function checkHttp() {
     const otherLogin = await call('POST', '/api/login', { username: 'admin', password: admin.password });
     assert(otherLogin.status === 200, '變更密碼前應能再開一個 session');
     const otherCookie = cookieHeader(otherLogin.headers['set-cookie']);
+    const tooShort = await call(
+      'POST',
+      '/api/account/password',
+      { currentPassword: admin.password, newPassword: 'short-pass1' },
+      { Cookie: adminCookie },
+    );
+    assert(tooShort.status === 400 && JSON.stringify(tooShort.json).includes('新密碼至少要 12 個字'), '少於 12 字的新密碼應被拒絕');
+    const commonPassword = await call(
+      'POST',
+      '/api/account/password',
+      { currentPassword: admin.password, newPassword: 'password1234' },
+      { Cookie: adminCookie },
+    );
+    assert(
+      commonPassword.status === 400 && JSON.stringify(commonPassword.json).includes('請換一個不容易猜到的密碼'),
+      '常見密碼應被拒絕',
+    );
+    const stillBlocked = await call('GET', '/api/state', undefined, { Cookie: adminCookie });
+    assert(stillBlocked.status === 403, '被拒絕的新密碼不應解除變更要求');
     const changed = await call(
       'POST',
       '/api/account/password',
@@ -762,12 +861,45 @@ async function checkHttp() {
     const orderAgain = await call('GET', `/api/lookup?number=${lockedNumber}&phoneLast4=0334`);
     assert(orderAgain.status === 200 && ordersOf(orderAgain.json).length === 1, '解除鎖定後，正確的電話應查得到');
 
+    process.env.REPAIR_LOOKUP_LOCKOUT_LIMIT = '100';
+    process.env.REPAIR_LOOKUP_LIMIT = '100';
+    process.env.REPAIR_LOOKUP_PROGRESS_BASE_MS = '80';
+    process.env.REPAIR_TRUSTED_PROXIES = '127.0.0.1';
+    lookupLockout.reset();
+    lookupLimiter.reset();
+    lookupProgress.reset();
+    const progressNumber = encodeURIComponent('維修單-20261028-002');
+    const lookupMissStart = Date.now();
+    const lookupMiss = await call('GET', `/api/lookup?number=${progressNumber}&phoneLast4=0000`, undefined, {
+      'X-Forwarded-For': '198.51.100.21',
+    });
+    const lookupMissMs = Date.now() - lookupMissStart;
+    assert(lookupMiss.status === 200 && ordersOf(lookupMiss.json).length === 0, '漸進等待前，錯誤電話應只是查無資料');
+    const lookupWaitStart = Date.now();
+    const lookupWaited = await call('GET', `/api/lookup?number=${progressNumber}&phoneLast4=1208`, undefined, {
+      'X-Forwarded-For': '198.51.100.22',
+    });
+    const lookupWaitedMs = Date.now() - lookupWaitStart;
+    assert(lookupWaited.status === 200 && ordersOf(lookupWaited.json).length === 1, '其他 IP 等待後仍應查到這張單');
+    assert(lookupWaitedMs >= lookupMissMs + 50, `跨 IP 的查詢失敗應先等待，實際 ${lookupWaitedMs}ms，對照 ${lookupMissMs}ms`);
+    assert(lookupWaitedMs < 5_000, '查詢的漸進等待不應變成 15 分鐘鎖定');
+    const lookupClearedStart = Date.now();
+    const lookupCleared = await call('GET', `/api/lookup?number=${progressNumber}&phoneLast4=1208`, undefined, {
+      'X-Forwarded-For': '198.51.100.23',
+    });
+    const lookupClearedMs = Date.now() - lookupClearedStart;
+    assert(lookupCleared.status === 200 && ordersOf(lookupCleared.json).length === 1, '查到之後應清掉等待');
+    assert(lookupClearedMs + 40 < lookupWaitedMs, `查詢成功後不應再等待，實際 ${lookupClearedMs}ms，對照 ${lookupWaitedMs}ms`);
+    process.env.REPAIR_LOOKUP_PROGRESS_BASE_MS = '15';
+    delete process.env.REPAIR_TRUSTED_PROXIES;
+    lookupProgress.reset();
+    lookupLockout.reset();
+
     process.env.REPAIR_LOGIN_LIMIT = '100';
     process.env.REPAIR_LOGIN_LOCKOUT_LIMIT = '3';
-    process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT = '100';
     loginLimiter.reset();
     loginLockout.reset();
-    loginAccountLockout.reset();
+    loginProgress.reset();
     const firstWrong = await call('POST', '/api/login', { username: 'staff', password: 'wrong-password' });
     assert(firstWrong.status === 401, '錯誤密碼應被拒絕');
     assert((firstWrong.json as { remainingAttempts?: number }).remainingAttempts === 2, '第一次失敗後應剩 2 次');
@@ -799,6 +931,7 @@ async function checkHttp() {
     process.env.REPAIR_RATE_LIMIT = '1000';
     loginLockout.reset();
     loginLimiter.reset();
+    loginProgress.reset();
     generalLimiter.reset();
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       const response = await call('POST', '/api/login', { username: 'admin', password: 'wrong-password' }, {
@@ -828,14 +961,13 @@ async function checkHttp() {
     assert(otherPrefixLogin.status === 200, '不同 IPv6 /64 不該被這個帳號鎖定');
     delete process.env.REPAIR_TRUSTED_PROXIES;
     loginLockout.reset();
-    loginAccountLockout.reset();
+    loginProgress.reset();
 
     process.env.REPAIR_LOGIN_LIMIT = '2';
     process.env.REPAIR_LOGIN_LOCKOUT_LIMIT = '100';
-    process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT = '100';
     loginLimiter.reset();
     loginLockout.reset();
-    loginAccountLockout.reset();
+    loginProgress.reset();
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const response = await call('POST', '/api/login', { username: 'admin', password: 'replacement-pass-1' });
       assert(response.status === 200, `成功登入不應計入 IP 失敗次數，實際 ${response.status}`);
@@ -849,24 +981,45 @@ async function checkHttp() {
 
     process.env.REPAIR_LOGIN_LIMIT = '100';
     process.env.REPAIR_LOGIN_LOCKOUT_LIMIT = '100';
-    process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT = '3';
+    process.env.REPAIR_LOGIN_PROGRESS_BASE_MS = '80';
+    process.env.REPAIR_RATE_LIMIT = '1000';
     process.env.REPAIR_TRUSTED_PROXIES = '127.0.0.1';
     loginLimiter.reset();
     loginLockout.reset();
-    loginAccountLockout.reset();
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const response = await call('POST', '/api/login', { username: 'admin', password: 'wrong-password' }, {
-        'X-Forwarded-For': `203.0.113.${attempt}`,
-      });
-      assert(response.status === 401, '全域帳號計數在鎖定前應是密碼錯誤');
-    }
-    const globalLocked = await call('POST', '/api/login', { username: 'admin', password: 'replacement-pass-1' }, {
-      'X-Forwarded-For': '203.0.113.40',
+    loginProgress.reset();
+    generalLimiter.reset();
+    const globalFirstStart = Date.now();
+    const globalFirst = await call('POST', '/api/login', { username: 'admin', password: 'wrong-password' }, {
+      'X-Forwarded-For': '203.0.113.41',
     });
-    assert(globalLocked.status === 429, '不同 IP 的失敗累積後應鎖定整個帳號');
+    const globalFirstMs = Date.now() - globalFirstStart;
+    assert(globalFirst.status === 401, '全域計數的第一次失敗應是密碼錯誤');
+    const waitedStart = Date.now();
+    const waited = await call('POST', '/api/login', { username: 'admin', password: 'wrong-password' }, {
+      'X-Forwarded-For': '203.0.113.42',
+    });
+    const waitedMs = Date.now() - waitedStart;
+    assert(waited.status === 401, '跨 IP 的下一次失敗仍應是密碼錯誤');
+    assert(waitedMs >= globalFirstMs + 50, `跨 IP 失敗應先等待，實際 ${waitedMs}ms，對照 ${globalFirstMs}ms`);
+    const longerStart = Date.now();
+    const longer = await call('POST', '/api/login', { username: 'admin', password: 'replacement-pass-1' }, {
+      'X-Forwarded-For': '203.0.113.43',
+    });
+    const longerMs = Date.now() - longerStart;
+    assert(longer.status === 200, '等待之後，正確密碼仍應可登入');
+    assert(longerMs >= waitedMs + 40, `失敗愈多等待應愈長，實際 ${longerMs}ms，對照 ${waitedMs}ms`);
+    assert(longerMs < 5_000, '漸進等待不應變成 15 分鐘鎖定');
+    const clearedStart = Date.now();
+    const clearedLogin = await call('POST', '/api/login', { username: 'admin', password: 'wrong-password' }, {
+      'X-Forwarded-For': '203.0.113.44',
+    });
+    const clearedMs = Date.now() - clearedStart;
+    assert(clearedLogin.status === 401, '成功登入後的新失敗應回到密碼錯誤');
+    assert(clearedMs + 40 < longerMs, `成功登入應清掉等待，實際 ${clearedMs}ms，對照 ${longerMs}ms`);
+    process.env.REPAIR_LOGIN_PROGRESS_BASE_MS = '15';
     delete process.env.REPAIR_TRUSTED_PROXIES;
     loginLockout.reset();
-    loginAccountLockout.reset();
+    loginProgress.reset();
     loginLimiter.reset();
 
     process.env.REPAIR_LOOKUP_LIMIT = '5';
@@ -892,14 +1045,16 @@ async function checkHttp() {
     delete process.env.REPAIR_LOOKUP_LOCKOUT_LIMIT;
     delete process.env.REPAIR_LOGIN_LIMIT;
     delete process.env.REPAIR_LOGIN_LOCKOUT_LIMIT;
-    delete process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT;
+    delete process.env.REPAIR_LOGIN_PROGRESS_BASE_MS;
+    delete process.env.REPAIR_LOOKUP_PROGRESS_BASE_MS;
     delete process.env.REPAIR_STORE_PHONE;
     lookupLimiter.reset();
     generalLimiter.reset();
     loginLimiter.reset();
     lookupLockout.reset();
     loginLockout.reset();
-    loginAccountLockout.reset();
+    loginProgress.reset();
+    lookupProgress.reset();
     await server.close();
     for (const suffix of ['', '-wal', '-shm', '.admin-password']) fs.rmSync(`${httpFile}${suffix}`, { force: true });
   }

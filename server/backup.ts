@@ -1,6 +1,7 @@
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import { DatabaseSync } from 'node:sqlite';
 
 function errorCode(error: unknown): string | undefined {
   if (error && typeof error === 'object' && 'code' in error) return String((error as { code: unknown }).code);
@@ -58,27 +59,51 @@ export function backupDatabase(db: DatabaseSync, target: string) {
   const parent = parentInsideRoot(path.dirname(target), root);
   const finalPath = path.join(parent, base);
   if (!insideRoot(root, finalPath) || finalPath.includes("'")) throw new Error('備份必須放在指定的備份目錄');
-  let fd: number;
+  refuseIfPresent(finalPath);
+  const tempPath = path.join(parent, `.${randomBytes(16).toString('hex')}.tmp`);
+  if (!insideRoot(root, tempPath) || tempPath.includes("'")) throw new Error('備份必須放在指定的備份目錄');
   try {
-    fd = fs.openSync(
-      finalPath,
-      fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW | fs.constants.O_WRONLY,
-      0o600,
-    );
-  } catch (error) {
-    if (errorCode(error) === 'EEXIST' || errorCode(error) === 'ELOOP') {
-      try {
-        if (fs.lstatSync(finalPath).isSymbolicLink()) throw new Error('備份路徑不能是符號連結');
-      } catch (statError) {
-        if (statError instanceof Error && statError.message.includes('符號連結')) throw statError;
-      }
+    db.exec(`VACUUM INTO '${tempPath}'`);
+    fs.chmodSync(tempPath, 0o600);
+    verifyBackupFile(tempPath);
+    try {
+      fs.linkSync(tempPath, finalPath);
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') throw error;
+      refuseIfPresent(finalPath);
+      throw new Error('備份檔已存在，請換一個路徑');
     }
-    if (errorCode(error) === 'EEXIST') throw new Error('備份檔已存在，請換一個路徑');
-    if (errorCode(error) === 'ELOOP') throw new Error('備份路徑不能是符號連結');
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+}
+
+function refuseIfPresent(finalPath: string) {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(finalPath);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return;
     throw error;
   }
-  fs.closeSync(fd);
-  fs.unlinkSync(finalPath);
-  db.exec(`VACUUM INTO '${finalPath}'`);
-  fs.chmodSync(finalPath, 0o600);
+  if (stat.isSymbolicLink()) throw new Error('備份路徑不能是符號連結');
+  throw new Error('備份檔已存在，請換一個路徑');
+}
+
+export function verifyBackupFile(filename: string) {
+  let check: DatabaseSync;
+  try {
+    check = new DatabaseSync(filename, { readOnly: true });
+  } catch {
+    throw new Error('備份檔完整性檢查失敗');
+  }
+  try {
+    const row = check.prepare('PRAGMA integrity_check').get() as { integrity_check?: string } | undefined;
+    if (!row || row.integrity_check !== 'ok') throw new Error('備份檔完整性檢查失敗');
+  } catch (error) {
+    if (error instanceof Error && error.message === '備份檔完整性檢查失敗') throw error;
+    throw new Error('備份檔完整性檢查失敗');
+  } finally {
+    check.close();
+  }
 }

@@ -20,7 +20,7 @@ import {
 import { addLog, createOrder, deleteInitialPasswordFile, ensureSeeded, getState, openDatabase, resetSeed, restrictOpenDatabase, searchOrders, searchPublic, updateStatus } from './db.ts';
 import { HttpError } from './errors.ts';
 import { databasePath } from './paths.ts';
-import { clientIp, generalLimiter, loginAccountLockout, loginLimiter, loginLockout, lookupLimiter, lookupLockout, purgeLimitMaps } from './rate-limit.ts';
+import { clientIp, generalLimiter, loginLimiter, loginLockout, loginProgress, lookupLimiter, lookupLockout, lookupProgress, purgeLimitMaps } from './rate-limit.ts';
 import { parseCreateOrder, parseLogBody, parseLogin, parsePasswordChange, parsePublicLookup, parseSearchQuery, parseStatusBody } from './validate.ts';
 
 const SECURITY_HEADERS = {
@@ -90,24 +90,26 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
         const body = parseLogin(await readJson(req));
         const username = body.username.trim().toLowerCase();
         const account = `${username}|${ip}`;
-        if (loginLockout.isLocked(account) || loginAccountLockout.isLocked(username)) {
-          const retryAfter = Math.max(loginLockout.retryAfter(account), loginAccountLockout.retryAfter(username));
+        if (loginLockout.isLocked(account)) {
+          const retryAfter = loginLockout.retryAfter(account);
           authenticate(database, body.username, body.password);
           throw new HttpError(429, loginLockoutMessage(retryAfter), retryAfter);
         }
+        const accountDelay = loginProgress.pendingMs(username);
+        if (accountDelay > 0) await sleep(accountDelay);
         const user = authenticate(database, body.username, body.password);
         if (!user) {
           loginLimiter.record(ip);
           loginLockout.fail(account);
-          loginAccountLockout.fail(username);
-          const remainingAttempts = Math.min(loginLockout.remaining(account), loginAccountLockout.remaining(username));
+          loginProgress.fail(username);
+          const remainingAttempts = loginLockout.remaining(account);
           const lockMs = Number(process.env.REPAIR_LOGIN_LOCKOUT_MS ?? 15 * 60_000);
           const warning = attemptsRemainingWarning(remainingAttempts, Number.isFinite(lockMs) && lockMs > 0 ? lockMs : 15 * 60_000);
           const message = warning ? `帳號或密碼不正確。${warning}` : '帳號或密碼不正確';
           throw new HttpError(401, message, undefined, remainingAttempts);
         }
         loginLockout.succeed(account);
-        loginAccountLockout.succeed(username);
+        loginProgress.succeed(username);
         const session = createSession(database, user.username);
         send(req, res, 200, user, { 'Set-Cookie': sessionCookie(session.token, session.maxAge) });
         return;
@@ -146,16 +148,26 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
           const retryAfter = lookupLockout.retryAfter(orderKey);
           throw new HttpError(429, lookupLockoutMessage(retryAfter, storePhone()), retryAfter);
         }
+        if (orderNumber) {
+          const orderDelay = lookupProgress.pendingMs(orderNumber);
+          if (orderDelay > 0) await sleep(orderDelay);
+        }
         let orders;
         try {
           orders = searchPublic(database, query);
         } catch (error) {
           if (orderKey) lookupLockout.fail(orderKey);
+          if (orderNumber) lookupProgress.fail(orderNumber);
           throw error;
         }
         if (orderKey) {
-          if (orders.length === 0) lookupLockout.fail(orderKey);
-          else lookupLockout.succeed(orderKey);
+          if (orders.length === 0) {
+            lookupLockout.fail(orderKey);
+            if (orderNumber) lookupProgress.fail(orderNumber);
+          } else {
+            lookupLockout.succeed(orderKey);
+            if (orderNumber) lookupProgress.succeed(orderNumber);
+          }
         }
         send(req, res, 200, { orders });
         return;
@@ -283,6 +295,11 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
 
 function storePhone(): string {
   return (process.env.REPAIR_STORE_PHONE ?? '').trim();
+}
+
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function orderIdFromPath(raw: string): string {

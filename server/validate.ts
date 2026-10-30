@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isCommonPassword } from '../src/lib/common-passwords.ts';
 import { toHalfWidth } from '../src/lib/orderNumber.ts';
 import type { CreateOrderInput, RepairStatus } from '../src/types.ts';
 import { HttpError } from './errors.ts';
@@ -59,7 +60,7 @@ const loginSchema = z.object({
 
 const passwordChangeSchema = z.object({
   currentPassword: z.string().min(1).max(200),
-  newPassword: z.string().min(8).max(200),
+  newPassword: z.string().min(12).max(200),
 });
 
 const searchQuerySchema = z.object({
@@ -89,7 +90,7 @@ function zodMessage(error: z.ZodError): string {
   if (path === 'status') return '狀態不正確';
   if (path === 'content') return '請寫下做了什麼事或下了什麼指令';
   if (path === 'username' || path === 'password' || path === 'currentPassword') return '請輸入帳號與密碼';
-  if (path === 'newPassword') return '新密碼至少要 8 個字';
+  if (path === 'newPassword') return '新密碼至少要 12 個字';
   return '內容不正確，請檢查欄位格式與長度';
 }
 
@@ -126,7 +127,9 @@ export function parseLogin(value: unknown): { username: string; password: string
 }
 
 export function parsePasswordChange(value: unknown): { currentPassword: string; newPassword: string } {
-  return parse(passwordChangeSchema, value);
+  const parsed = parse(passwordChangeSchema, value);
+  if (isCommonPassword(parsed.newPassword)) throw new HttpError(400, '請換一個不容易猜到的密碼');
+  return parsed;
 }
 
 export function parseSearchQuery(value: Record<string, string>) {
