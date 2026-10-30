@@ -3,6 +3,7 @@ export type UserRole = 'admin' | 'staff';
 export type SessionUser = {
   username: string;
   role: UserRole;
+  mustChangePassword: boolean;
 };
 
 export type RepairStatus = 'received' | 'in_progress' | 'ready' | 'completed';

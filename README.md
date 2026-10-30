@@ -44,16 +44,20 @@ npm run check:api
 
 店內頁面需要登入。角色有 `admin`（管理員）與 `staff`（櫃檯人員）。客戶查詢頁不用登入。
 
-資料庫第一次建立管理員時，帳號是 `admin`。密碼在當下隨機產生，印在執行 API 或 `npm run seed` 的主控台，不會寫進程式碼。請先抄下來。
+資料庫第一次建立管理員時，帳號是 `admin`。密碼不會印在主控台。
 
-```text
-預設管理員帳號：admin
-預設管理員密碼：<隨機密碼>
-```
+- 若設定了 `REPAIR_ADMIN_PASSWORD`（8 到 200 字），就用這個值當初始密碼。
+- 否則會寫進與資料庫同名的一次性檔案，權限 `600`，主控台只印路徑，例如 `data/repair.sqlite.admin-password`。
 
-忘記密碼時，先停止 API，刪除 `data/repair.sqlite`、`data/repair.sqlite-wal`、`data/repair.sqlite-shm`，再重新啟動。新的密碼會再印一次。
+第一次登入必須變更密碼。變更完成前，店內 API 會拒絕其他操作；客戶查詢頁不受影響。
 
-登入成功後，瀏覽器只會拿到 `HttpOnly`、`SameSite=Strict` 的 session cookie。處理紀錄與狀態歷程的紀錄人是登入帳號，請求內容裡的名字不會被採用。
+忘記密碼時，先停止 API，刪除資料庫檔、`-wal`、`-shm`，以及 `*.admin-password`，再重新啟動。或是改設 `REPAIR_ADMIN_PASSWORD` 後刪除資料庫，讓它重新建立管理員。
+
+登入成功後，瀏覽器只會拿到 `HttpOnly`、`SameSite=Strict` 的 session cookie。`NODE_ENV=production` 時，cookie 名稱是 `__Host-nextone_session`，並加上 `Secure`。處理紀錄與狀態歷程的紀錄人是登入帳號，請求內容裡的名字不會被採用。
+
+過期的 session 會在啟動時清掉，之後約每 15 分鐘再清一次。
+
+登入失敗太多次會暫時鎖定該帳號。客戶查詢對同一張完整單號失敗太多次，也會暫時鎖定那張單號。速率限制預設看連線來源。只有 `REPAIR_TRUSTED_PROXIES`（逗號分隔的代理 IP，預設空白）裡的直接來源才會採用 `X-Forwarded-For`，而且取最右邊一個不在信任清單裡的位址。IPv6 以 `/64` 一起計算。
 
 只有管理員可以「還原示範資料」。`NODE_ENV=production` 時這個功能會關閉。預設只建立管理員；`users` 表的 `role` 可以是 `staff`，但目前沒有另開帳號的畫面。
 
@@ -83,11 +87,13 @@ npm run preview
 REPAIR_DB_PATH=/absolute/path/repair.sqlite npm run start
 ```
 
-備份使用 SQLite `VACUUM INTO`，備份檔也會設為 `600`：
+備份使用 SQLite `VACUUM INTO`，備份檔也會設為 `600`。目標檔如果已經存在就會拒絕，不會先刪掉。
 
 ```bash
 npm run backup -- /absolute/path/repair-backup.sqlite
 ```
+
+若設定 `REPAIR_BACKUP_DIR`（絕對路徑），備份檔必須放在那個目錄裡。
 
 ## 查詢條件
 

@@ -3,7 +3,7 @@ import { createContext } from 'react';
 import type { CreateOrderInput, Database, RepairOrder, RepairStatus, SessionUser } from '../types';
 import { ApiError, api } from './api';
 
-type Phase = 'loading' | 'anonymous' | 'ready';
+type Phase = 'loading' | 'anonymous' | 'password' | 'ready';
 
 type StoreValue = {
   db: Database | null;
@@ -12,6 +12,7 @@ type StoreValue = {
   error: string;
   revision: number;
   login: (username: string, password: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
   resetDemo: () => Promise<void>;
   createOrder: (input: CreateOrderInput) => Promise<RepairOrder>;
@@ -41,6 +42,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .then(async (session) => {
         if (cancelled) return;
         setUser(session);
+        if (session.mustChangePassword) {
+          setDb(null);
+          setPhase('password');
+          return;
+        }
         const next = await api<Database>('/api/state');
         if (cancelled) return;
         setDb(next);
@@ -71,6 +77,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ username, password }),
       });
       setUser(session);
+      if (session.mustChangePassword) {
+        setDb(null);
+        setPhase('password');
+        return;
+      }
       try {
         await refresh();
       } catch (error) {
@@ -79,6 +90,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setPhase('anonymous');
         throw error;
       }
+      setPhase('ready');
+    },
+    [refresh],
+  );
+
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      const session = await api<SessionUser>('/api/account/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      setUser(session);
+      await refresh();
       setPhase('ready');
     },
     [refresh],
@@ -130,8 +154,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ db, user, phase, error, revision, login, logout, resetDemo, createOrder, updateStatus, addLog }),
-    [db, user, phase, error, revision, login, logout, resetDemo, createOrder, updateStatus, addLog],
+    () => ({ db, user, phase, error, revision, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog }),
+    [db, user, phase, error, revision, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

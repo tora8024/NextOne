@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from '../lib/store';
+import { ChangePasswordPage } from '../pages/ChangePassword';
 import { LoginPage } from '../pages/Login';
 import { IconClipboard, IconDevice, IconHome, IconPeople, IconPlus, IconSearch } from './Icons';
 
@@ -56,6 +57,9 @@ export function AdminLayout() {
         <LoginPage />
       </>
     );
+  }
+  if (phase === 'password' || user.mustChangePassword) {
+    return <ChangePasswordPage />;
   }
 
   return (

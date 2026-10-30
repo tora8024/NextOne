@@ -4,21 +4,55 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
+import type { IncomingMessage } from 'node:http';
 import type { Database, RepairOrder, SessionUser } from '../src/types.ts';
 import { taipeiCalendar } from '../src/lib/orderNumber.ts';
+import { createSession, purgeExpiredSessions } from './auth.ts';
 import { backupDatabase } from './backup.ts';
 import { createOrder, createUser, explainPlan, openDatabase, resetSeed, searchOrders, searchPublic, type SearchFilters } from './db.ts';
 import { startServer } from './index.ts';
 import { databasePath } from './paths.ts';
-import { generalLimiter, lookupLimiter } from './rate-limit.ts';
+import { bucketIp, clientIp, generalLimiter, loginLimiter, loginLockout, lookupLimiter, lookupLockout } from './rate-limit.ts';
 
 const filename = path.join(os.tmpdir(), `repair-selfcheck-${process.pid}.sqlite`);
 fs.rmSync(filename, { force: true });
 fs.rmSync(`${filename}-wal`, { force: true });
 fs.rmSync(`${filename}-shm`, { force: true });
 const db = openDatabase(filename);
+delete process.env.REPAIR_ADMIN_PASSWORD;
+const seedLogs: string[] = [];
+const originalLog = console.log;
+console.log = (...args: unknown[]) => {
+  seedLogs.push(args.map((item) => String(item)).join(' '));
+};
 const seededAdmin = resetSeed(db);
+console.log = originalLog;
 assert(seededAdmin?.username === 'admin' && seededAdmin.password.length >= 20, '種子應產生管理員密碼');
+assert(!seedLogs.some((line) => line.includes(seededAdmin.password)), '主控台不得印出管理員密碼');
+const passwordFile = `${filename}.admin-password`;
+assert(fs.readFileSync(passwordFile, 'utf8').trim() === seededAdmin.password, '初始密碼應寫入一次性檔案');
+assert((fs.statSync(passwordFile).mode & 0o777) === 0o600, '密碼檔應為 600');
+assert(seedLogs.some((line) => line.includes(passwordFile)), '主控台應印出密碼檔路徑');
+const mustChange = db.prepare('SELECT must_change_password AS flag FROM users WHERE username = ?').get('admin') as { flag: number };
+assert(Number(mustChange.flag) === 1, '預設管理員首次登入必須變更密碼');
+const envFile = path.join(os.tmpdir(), `repair-selfcheck-env-${process.pid}.sqlite`);
+fs.rmSync(envFile, { force: true });
+const envDb = openDatabase(envFile);
+process.env.REPAIR_ADMIN_PASSWORD = 'env-admin-password';
+const envLogs: string[] = [];
+console.log = (...args: unknown[]) => {
+  envLogs.push(args.map((item) => String(item)).join(' '));
+};
+const envAdmin = resetSeed(envDb);
+console.log = originalLog;
+assert(envAdmin?.password === 'env-admin-password', '應採用 REPAIR_ADMIN_PASSWORD');
+assert(!envLogs.some((line) => line.includes('env-admin-password')), '環境變數密碼不得印出');
+assert(!fs.existsSync(`${envFile}.admin-password`), '有環境變數時不應再寫密碼檔');
+delete process.env.REPAIR_ADMIN_PASSWORD;
+envDb.close();
+fs.rmSync(envFile, { force: true });
+fs.rmSync(`${envFile}-wal`, { force: true });
+fs.rmSync(`${envFile}-shm`, { force: true });
 assert((fs.statSync(filename).mode & 0o777) === 0o600, `資料庫檔案應為 600，實際 ${(fs.statSync(filename).mode & 0o777).toString(8)}`);
 for (const suffix of ['-wal', '-shm']) {
   const sidecar = `${filename}${suffix}`;
@@ -37,6 +71,23 @@ try {
 if (savedDbPath === undefined) delete process.env.REPAIR_DB_PATH;
 else process.env.REPAIR_DB_PATH = savedDbPath;
 assert(relativeRejected, '相對資料庫路徑應被拒絕');
+assert(bucketIp('2001:db8:1:2::1') === bucketIp('2001:db8:1:2:ffff::9'), '同一個 IPv6 /64 應共用配額');
+assert(bucketIp('2001:db8:1:2::1') !== bucketIp('2001:db8:1:3::1'), '不同 IPv6 /64 應分開計算');
+assert(bucketIp('::ffff:203.0.113.8') === '203.0.113.8', 'IPv4-mapped 位址應還原成 IPv4');
+const untrustedPeer = { socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9' } } as unknown as IncomingMessage;
+delete process.env.REPAIR_TRUSTED_PROXIES;
+assert(clientIp(untrustedPeer) === '127.0.0.1', '未信任的來源應忽略 X-Forwarded-For');
+process.env.REPAIR_TRUSTED_PROXIES = '127.0.0.1';
+assert(clientIp(untrustedPeer) === '203.0.113.9', '信任代理時應採用轉送位址');
+const v6Peer = { socket: { remoteAddress: '2001:db8:1:2::10' }, headers: { 'x-forwarded-for': '198.51.100.4, 203.0.113.50' } } as unknown as IncomingMessage;
+process.env.REPAIR_TRUSTED_PROXIES = '2001:db8:1:2::10';
+assert(clientIp(v6Peer) === '203.0.113.50', '應採用最右邊一個未信任的轉送位址');
+delete process.env.REPAIR_TRUSTED_PROXIES;
+createSession(db, 'admin');
+db.prepare('UPDATE sessions SET expires_at = ?').run('2000-01-01T00:00:00.000Z');
+purgeExpiredSessions(db);
+const remainingSessions = db.prepare('SELECT COUNT(*) AS n FROM sessions').get() as { n: number };
+assert(Number(remainingSessions.n) === 0, '應清掉過期的 session');
 process.env.REPAIR_DB_PATH = filename;
 assert(databasePath() === filename, '應接受絕對路徑的 REPAIR_DB_PATH');
 if (savedDbPath === undefined) delete process.env.REPAIR_DB_PATH;
@@ -234,9 +285,35 @@ const backupPath = path.join(os.tmpdir(), `repair-selfcheck-backup-${process.pid
 fs.rmSync(backupPath, { force: true });
 backupDatabase(db, backupPath);
 assert((fs.statSync(backupPath).mode & 0o777) === 0o600, '備份檔應為 600');
+let existingRefused = false;
+try {
+  backupDatabase(db, backupPath);
+} catch (error) {
+  existingRefused = error instanceof Error && error.message.includes('已存在');
+}
+assert(existingRefused, '已存在的備份檔應被拒絕');
 const backed = openDatabase(backupPath);
-assert(searchOrders(backed, { number: '維修單-20261024-001' }).length === 1, '備份應讀得到原維修單');
+assert(searchOrders(backed, { number: '維修單-20261024-001' }).length === 1, '拒絕覆寫後，原備份仍應讀得到');
 backed.close();
+const backupDir = path.join(os.tmpdir(), `repair-backup-dir-${process.pid}`);
+fs.mkdirSync(backupDir, { recursive: true });
+process.env.REPAIR_BACKUP_DIR = backupDir;
+const outside = path.join(os.tmpdir(), `repair-backup-outside-${process.pid}.sqlite`);
+fs.rmSync(outside, { force: true });
+let outsideRefused = false;
+try {
+  backupDatabase(db, outside);
+} catch (error) {
+  outsideRefused = error instanceof Error && error.message.includes('備份目錄');
+}
+assert(outsideRefused, '備份目錄以外的路徑應被拒絕');
+assert(!fs.existsSync(outside), '被拒絕的備份不應留下檔案');
+const inside = path.join(backupDir, 'copy.sqlite');
+backupDatabase(db, inside);
+assert((fs.statSync(inside).mode & 0o777) === 0o600, '目錄內的備份應為 600');
+delete process.env.REPAIR_BACKUP_DIR;
+fs.rmSync(inside, { force: true });
+fs.rmSync(backupDir, { recursive: true, force: true });
 fs.rmSync(backupPath, { force: true });
 fs.rmSync(`${backupPath}-wal`, { force: true });
 fs.rmSync(`${backupPath}-shm`, { force: true });
@@ -246,6 +323,7 @@ await checkHttp();
 fs.rmSync(filename, { force: true });
 fs.rmSync(`${filename}-wal`, { force: true });
 fs.rmSync(`${filename}-shm`, { force: true });
+fs.rmSync(`${filename}.admin-password`, { force: true });
 console.log('api selfcheck ok');
 
 type HttpResult = { status: number; json: unknown; headers: http.IncomingHttpHeaders };
@@ -371,10 +449,30 @@ async function checkHttp() {
     const adminCookie = cookieHeader(adminLogin.headers['set-cookie']);
     const session = adminLogin.json as SessionUser;
     assert(session.role === 'admin' && session.username === 'admin', '登入回應應為管理員');
+    assert(session.mustChangePassword === true, '預設管理員登入後應被要求變更密碼');
+    const blockedState = await call('GET', '/api/state', undefined, { Cookie: adminCookie });
+    assert(blockedState.status === 403, `變更密碼前不得讀取店內資料，實際 ${blockedState.status}`);
+    const changed = await call(
+      'POST',
+      '/api/account/password',
+      { currentPassword: admin.password, newPassword: 'replacement-pass-1' },
+      { Cookie: adminCookie },
+    );
+    assert(changed.status === 200, `變更密碼應成功，實際 ${changed.status} ${JSON.stringify(changed.json)}`);
+    assert((changed.json as SessionUser).mustChangePassword === false, '變更後應解除限制');
+    const unlocked = await call('GET', '/api/state', undefined, { Cookie: adminCookie });
+    assert(unlocked.status === 200, '變更密碼後應讀得到店內資料');
 
     process.env.NODE_ENV = 'production';
-    const blockedReset = await call('POST', '/api/admin/reset', undefined, { Cookie: adminCookie });
-    assert(blockedReset.status === 403, '正式環境應停用還原示範資料');
+    const prodLogin = await call('POST', '/api/login', { username: 'admin', password: 'replacement-pass-1' });
+    assert(prodLogin.status === 200, '正式環境應可登入');
+    const prodSetCookie = String(prodLogin.headers['set-cookie']);
+    assert(prodSetCookie.includes('__Host-nextone_session='), '正式環境 cookie 應使用 __Host- 前綴');
+    assert(/;\s*Secure/i.test(prodSetCookie), '正式環境 cookie 應為 Secure');
+    assert(!/Domain=/i.test(prodSetCookie), '__Host- cookie 不得帶 Domain');
+    const prodCookie = cookieHeader(prodLogin.headers['set-cookie']);
+    const blockedReset = await call('POST', '/api/admin/reset', undefined, { Cookie: prodCookie });
+    assert(blockedReset.status === 403 && JSON.stringify(blockedReset.json).includes('正式環境'), '正式環境應停用還原示範資料');
     process.env.NODE_ENV = 'development';
 
     const created = await call(
@@ -445,6 +543,60 @@ async function checkHttp() {
     const allowedReset = await call('POST', '/api/admin/reset', undefined, { Cookie: adminCookie });
     assert(allowedReset.status === 200, '開發環境的管理員應可還原示範資料');
 
+    delete process.env.REPAIR_TRUSTED_PROXIES;
+    process.env.REPAIR_RATE_LIMIT = '1000';
+    process.env.REPAIR_LOOKUP_LIMIT = '3';
+    generalLimiter.reset();
+    lookupLimiter.reset();
+    let forwardedIgnored = false;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await call('GET', '/api/lookup?number=1', undefined, { 'X-Forwarded-For': `203.0.113.${attempt}` });
+      if (response.status === 429) forwardedIgnored = true;
+    }
+    assert(forwardedIgnored, '未信任的來源應忽略 X-Forwarded-For，所有請求共用本機配額');
+
+    process.env.REPAIR_TRUSTED_PROXIES = '127.0.0.1';
+    process.env.REPAIR_LOOKUP_LIMIT = '1';
+    lookupLimiter.reset();
+    const forwardedFirst = await call('GET', '/api/lookup?number=1', undefined, { 'X-Forwarded-For': '203.0.113.10' });
+    const forwardedSame = await call('GET', '/api/lookup?number=1', undefined, { 'X-Forwarded-For': '203.0.113.10' });
+    const forwardedOther = await call('GET', '/api/lookup?number=1', undefined, { 'X-Forwarded-For': '203.0.113.11' });
+    assert(forwardedFirst.status !== 429, '信任代理的第一個轉送位址不應立刻被限制');
+    assert(forwardedSame.status === 429, '信任代理時，同一轉送 IP 應共用配額');
+    assert(forwardedOther.status !== 429, '信任代理時，不同轉送 IP 應分開計算');
+    delete process.env.REPAIR_TRUSTED_PROXIES;
+
+    process.env.REPAIR_LOOKUP_LIMIT = '100';
+    process.env.REPAIR_LOOKUP_LOCKOUT_LIMIT = '3';
+    lookupLimiter.reset();
+    lookupLockout.reset();
+    const lockedNumber = encodeURIComponent('維修單-20261024-001');
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await call('GET', `/api/lookup?number=${lockedNumber}&phoneLast4=0000`);
+      assert(response.status === 200 && ordersOf(response.json).length === 0, '錯誤電話應查無資料');
+    }
+    const orderLocked = await call('GET', `/api/lookup?number=${lockedNumber}&phoneLast4=0334`);
+    assert(orderLocked.status === 429, '同一單號失敗太多次應被鎖定');
+    const otherOrder = await call('GET', `/api/lookup?number=${encodeURIComponent('維修單-20261028-001')}&phoneLast4=4567`);
+    assert(otherOrder.status === 200 && ordersOf(otherOrder.json).length === 1, '其他單號不該被這次鎖定波及');
+    lookupLockout.reset();
+    const orderAgain = await call('GET', `/api/lookup?number=${lockedNumber}&phoneLast4=0334`);
+    assert(orderAgain.status === 200 && ordersOf(orderAgain.json).length === 1, '解除鎖定後，正確的電話應查得到');
+
+    process.env.REPAIR_LOGIN_LIMIT = '100';
+    process.env.REPAIR_LOGIN_LOCKOUT_LIMIT = '3';
+    loginLimiter.reset();
+    loginLockout.reset();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await call('POST', '/api/login', { username: 'staff', password: 'wrong-password' });
+      assert(response.status === 401, '錯誤密碼應被拒絕');
+    }
+    const accountLocked = await call('POST', '/api/login', { username: 'staff', password: staffPassword });
+    assert(accountLocked.status === 429, '帳號失敗太多次後，正確密碼也應被鎖定');
+    const otherAccount = await call('POST', '/api/login', { username: 'nobody', password: 'wrong-password' });
+    assert(otherAccount.status === 401, '其他帳號不該被這次鎖定波及');
+    loginLockout.reset();
+
     process.env.REPAIR_LOOKUP_LIMIT = '5';
     lookupLimiter.reset();
     let lookupLimited = false;
@@ -464,9 +616,16 @@ async function checkHttp() {
     else process.env.NODE_ENV = previousEnv;
     delete process.env.REPAIR_LOOKUP_LIMIT;
     delete process.env.REPAIR_RATE_LIMIT;
+    delete process.env.REPAIR_TRUSTED_PROXIES;
+    delete process.env.REPAIR_LOOKUP_LOCKOUT_LIMIT;
+    delete process.env.REPAIR_LOGIN_LIMIT;
+    delete process.env.REPAIR_LOGIN_LOCKOUT_LIMIT;
     lookupLimiter.reset();
     generalLimiter.reset();
+    loginLimiter.reset();
+    lookupLockout.reset();
+    loginLockout.reset();
     await server.close();
-    for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${httpFile}${suffix}`, { force: true });
+    for (const suffix of ['', '-wal', '-shm', '.admin-password']) fs.rmSync(`${httpFile}${suffix}`, { force: true });
   }
 }

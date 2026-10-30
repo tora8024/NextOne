@@ -2,22 +2,25 @@ import fs from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { canonicalWorkOrderNumber } from '../src/lib/orderNumber.ts';
 import type { SessionUser } from '../src/types.ts';
 import {
   authenticate,
+  changePassword,
   clearSessionCookie,
   createSession,
   destroySession,
+  purgeExpiredSessions,
   readCookie,
   readSession,
-  SESSION_COOKIE,
   sessionCookie,
+  sessionCookieName,
 } from './auth.ts';
 import { createOrder, ensureSeeded, getState, openDatabase, resetSeed, restrictOpenDatabase, searchOrders, searchPublic, updateStatus, addLog } from './db.ts';
 import { HttpError } from './errors.ts';
 import { databasePath } from './paths.ts';
-import { clientIp, generalLimiter, loginLimiter, lookupLimiter } from './rate-limit.ts';
-import { parseCreateOrder, parseLogBody, parseLogin, parsePublicLookup, parseSearchQuery, parseStatusBody } from './validate.ts';
+import { clientIp, generalLimiter, lockoutKey, loginLimiter, loginLockout, lookupLimiter, lookupLockout } from './rate-limit.ts';
+import { parseCreateOrder, parseLogBody, parseLogin, parsePasswordChange, parsePublicLookup, parseSearchQuery, parseStatusBody } from './validate.ts';
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
@@ -40,6 +43,15 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
   const database = openDatabase(filename);
   ensureSeeded(database);
   restrictOpenDatabase(database);
+  purgeExpiredSessions(database);
+  const purgeTimer = setInterval(() => {
+    try {
+      purgeExpiredSessions(database);
+    } catch {
+      // The database may already be closed.
+    }
+  }, 15 * 60 * 1000);
+  purgeTimer.unref();
 
   const server = createServer((req, res) => {
     void handle(req, res);
@@ -73,19 +85,36 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
         }
         assertJson(req);
         const body = parseLogin(await readJson(req));
+        const account = lockoutKey(body.username);
+        if (loginLockout.isLocked(account)) {
+          authenticate(database, body.username, body.password);
+          throw new HttpError(429, '登入失敗次數過多，請稍後再試');
+        }
         const user = authenticate(database, body.username, body.password);
-        if (!user) throw new HttpError(401, '帳號或密碼不正確');
+        if (!user) {
+          loginLockout.fail(account);
+          throw new HttpError(401, '帳號或密碼不正確');
+        }
+        loginLockout.succeed(account);
         const session = createSession(database, user.username);
         send(req, res, 200, user, { 'Set-Cookie': sessionCookie(session.token, session.maxAge) });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/logout') {
-        destroySession(database, readCookie(req.headers.cookie, SESSION_COOKIE));
+        destroySession(database, readCookie(req.headers.cookie, sessionCookieName()));
         send(req, res, 200, { ok: true }, { 'Set-Cookie': clearSessionCookie() });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/me') {
-        send(req, res, 200, requireUser(req));
+        send(req, res, 200, requireUser(req, true));
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/account/password') {
+        const user = requireUser(req, true);
+        assertJson(req);
+        const body = parsePasswordChange(await readJson(req));
+        const updated = changePassword(database, user.username, body.currentPassword, body.newPassword);
+        send(req, res, 200, updated);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/lookup') {
@@ -97,7 +126,22 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
           number: url.searchParams.get('number') ?? '',
           phoneLast4: url.searchParams.get('phoneLast4') ?? '',
         });
-        send(req, res, 200, { orders: searchPublic(database, query) });
+        const orderKey = canonicalWorkOrderNumber(query.number);
+        if (orderKey && lookupLockout.isLocked(orderKey)) {
+          throw new HttpError(429, '這個單號查詢次數過多，請稍後再試');
+        }
+        let orders;
+        try {
+          orders = searchPublic(database, query);
+        } catch (error) {
+          if (orderKey) lookupLockout.fail(orderKey);
+          throw error;
+        }
+        if (orderKey) {
+          if (orders.length === 0) lookupLockout.fail(orderKey);
+          else lookupLockout.succeed(orderKey);
+        }
+        send(req, res, 200, { orders });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/state') {
@@ -169,15 +213,17 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
     }
   }
 
-  function requireUser(req: IncomingMessage): SessionUser {
-    const user = readSession(database, readCookie(req.headers.cookie, SESSION_COOKIE));
+  function requireUser(req: IncomingMessage, allowDuringPasswordChange = false): SessionUser {
+    const user = readSession(database, readCookie(req.headers.cookie, sessionCookieName()));
     if (!user) throw new HttpError(401, '請先登入');
+    if (user.mustChangePassword && !allowDuringPasswordChange) throw new HttpError(403, '請先變更密碼');
     return user;
   }
 
   const port = options?.port ?? Number(process.env.PORT ?? 8787);
   return new Promise((resolve, reject) => {
     const onError = (error: Error) => {
+      clearInterval(purgeTimer);
       database.close();
       reject(error);
     };
@@ -186,6 +232,7 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
       server.off('error', onError);
       const address = server.address();
       if (!address || typeof address !== 'object' || address.address !== BIND_HOST) {
+        clearInterval(purgeTimer);
         server.close();
         database.close();
         reject(new Error('API 只能綁定 127.0.0.1'));
@@ -197,6 +244,7 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
         host: address.address,
         close: () =>
           new Promise((done, fail) => {
+            clearInterval(purgeTimer);
             server.close((error) => {
               database.close();
               if (error) fail(error);

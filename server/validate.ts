@@ -57,6 +57,11 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
+const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: z.string().min(8).max(200),
+});
+
 const searchQuerySchema = z.object({
   number: z.string().max(64).optional().default(''),
   nt: z.string().max(128).optional().default(''),
@@ -83,7 +88,8 @@ function zodMessage(error: z.ZodError): string {
   if (path.includes('repairTarget')) return '請描述送修的硬體或軟體';
   if (path === 'status') return '狀態不正確';
   if (path === 'content') return '請寫下做了什麼事或下了什麼指令';
-  if (path === 'username' || path === 'password') return '請輸入帳號與密碼';
+  if (path === 'username' || path === 'password' || path === 'currentPassword') return '請輸入帳號與密碼';
+  if (path === 'newPassword') return '新密碼至少要 8 個字';
   return '內容不正確，請檢查欄位格式與長度';
 }
 
@@ -117,6 +123,10 @@ export function parseLogBody(value: unknown): { content: string; visibleToCustom
 
 export function parseLogin(value: unknown): { username: string; password: string } {
   return parse(loginSchema, value);
+}
+
+export function parsePasswordChange(value: unknown): { currentPassword: string; newPassword: string } {
+  return parse(passwordChangeSchema, value);
 }
 
 export function parseSearchQuery(value: Record<string, string>) {

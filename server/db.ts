@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS users (
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'staff')),
+  must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
   created_at TEXT NOT NULL
 );
 
@@ -183,9 +184,17 @@ export function openDatabase(filename: string): DatabaseSync {
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA journal_mode = WAL');
   db.exec(SCHEMA);
+  ensureUserColumns(db);
   databaseFiles.set(db, absolute);
   restrictDatabasePermissions(absolute);
   return db;
+}
+
+function ensureUserColumns(db: DatabaseSync) {
+  const columns = db.prepare('PRAGMA table_info(users)').all() as { name?: string }[];
+  if (!columns.some((column) => column.name === 'must_change_password')) {
+    db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 export function ensureSeeded(db: DatabaseSync): SeededAdmin | null {
@@ -273,16 +282,26 @@ export function createUser(db: DatabaseSync, input: { username: string; password
 function ensureDefaultAdmin(db: DatabaseSync): SeededAdmin | null {
   const existing = one(db, 'SELECT id FROM users WHERE username = ?', 'admin');
   if (existing) return null;
-  const password = randomBytes(18).toString('base64url');
-  db.prepare('INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
-    crypto.randomUUID(),
-    'admin',
-    hashPassword(password),
-    'admin',
-    new Date().toISOString(),
-  );
-  console.log('預設管理員帳號：admin');
-  console.log(`預設管理員密碼：${password}`);
+  const fromEnv = process.env.REPAIR_ADMIN_PASSWORD;
+  let password: string;
+  if (fromEnv !== undefined && fromEnv.length > 0) {
+    if (fromEnv.length < 8 || fromEnv.length > 200) throw new HttpError(500, 'REPAIR_ADMIN_PASSWORD 長度不正確');
+    password = fromEnv;
+    console.log('預設管理員帳號：admin');
+    console.log('預設管理員密碼取自 REPAIR_ADMIN_PASSWORD，首次登入必須變更。');
+  } else {
+    password = randomBytes(18).toString('base64url');
+    const dbFile = databaseFiles.get(db);
+    const passwordFile = dbFile ? `${dbFile}.admin-password` : path.resolve(process.cwd(), 'data', 'admin-password.txt');
+    fs.mkdirSync(path.dirname(passwordFile), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(passwordFile, `${password}\n`, { mode: 0o600 });
+    fs.chmodSync(passwordFile, 0o600);
+    console.log('預設管理員帳號：admin');
+    console.log(`預設管理員初始密碼檔：${passwordFile}`);
+  }
+  db.prepare(
+    'INSERT INTO users (id, username, password_hash, role, must_change_password, created_at) VALUES (?, ?, ?, ?, 1, ?)',
+  ).run(crypto.randomUUID(), 'admin', hashPassword(password), 'admin', new Date().toISOString());
   return { username: 'admin', password };
 }
 
