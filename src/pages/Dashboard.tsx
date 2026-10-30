@@ -5,20 +5,27 @@ import { recentActivity, sortOrders } from '../lib/db';
 import { deviceKindSummary, formatDateTime, formatLongDate } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 import { STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
-import { useDatabase } from '../lib/store';
+import { useDatabase, useStore } from '../lib/store';
+import { PASSWORD_UPDATED } from '../lib/ux';
 
 export function DashboardPage() {
   const db = useDatabase();
+  const { notice } = useStore();
   usePageTitle('總覽');
   const openOrders = sortOrders(db.orders.filter((order) => order.status !== 'completed'));
   const activity = recentActivity(db.orders, 6);
 
   return (
     <>
+      {notice === PASSWORD_UPDATED ? (
+        <p className="notice" role="status">
+          {PASSWORD_UPDATED}
+        </p>
+      ) : null}
       <PageHeader
         kicker="工作台"
         title="總覽"
-        lede={`${formatLongDate(new Date())}。設備與維修單存在這台電腦的 SQLite，手機連上這個網址就能查到同一份進度。側邊欄可還原示範資料。`}
+        lede={`${formatLongDate(new Date())}。設備與維修單存在這台電腦的 SQLite。客戶要用完整單號與電話末四碼查詢。管理員可在側邊欄還原示範資料。`}
         actions={
           <Link className="btn btn-primary" to="/orders/new">
             建立維修單

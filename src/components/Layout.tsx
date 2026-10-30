@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useStore } from '../lib/store';
+import { RESET_CONFIRM, showDemoAndReset } from '../lib/ux';
+import { ChangePasswordPage } from '../pages/ChangePassword';
+import { LoginPage } from '../pages/Login';
 import { IconClipboard, IconDevice, IconHome, IconPeople, IconPlus, IconSearch } from './Icons';
 
 const NAV = [
@@ -21,10 +24,13 @@ function activeId(pathname: string): string {
 }
 
 export function AdminLayout() {
-  const { db, error, resetDemo } = useStore();
+  const { db, error, user, phase, resetDemo, logout } = useStore();
   const location = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [resetError, setResetError] = useState('');
+  const [resetPhrase, setResetPhrase] = useState('');
+  const [resetOpen, setResetOpen] = useState(false);
   const current = activeId(location.pathname);
   const openCount = db?.orders.filter((order) => order.status !== 'completed').length ?? 0;
 
@@ -35,6 +41,29 @@ export function AdminLayout() {
   useEffect(() => {
     window.scrollTo(0, 0);
   }, [location.pathname]);
+
+  if (phase === 'loading') {
+    return (
+      <main className="lookup-page">
+        <p className="empty">正在確認登入狀態…</p>
+      </main>
+    );
+  }
+  if (!user) {
+    return (
+      <>
+        {error ? (
+          <p className="form-error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <LoginPage />
+      </>
+    );
+  }
+  if (phase === 'password' || user.mustChangePassword) {
+    return <ChangePasswordPage />;
+  }
 
   return (
     <div className="shell">
@@ -62,20 +91,56 @@ export function AdminLayout() {
           ))}
         </nav>
         <div className="sidebar-foot">
+          <p className="who">
+            {user.username} · {user.role === 'admin' ? '管理員' : '櫃檯人員'}
+          </p>
           <Link className="nav-link" to="/lookup" target="_blank" rel="noreferrer">
             <IconSearch />
             <span>客戶查詢頁</span>
           </Link>
+          {user.role === 'admin' && showDemoAndReset(import.meta.env.PROD) ? (
+            <div className="reset-block">
+              {resetOpen ? (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (resetPhrase !== RESET_CONFIRM) return;
+                    setResetError('');
+                    void resetDemo()
+                      .then(() => {
+                        setResetPhrase('');
+                        setResetOpen(false);
+                        navigate('/');
+                      })
+                      .catch((reason: unknown) => {
+                        setResetError(reason instanceof Error ? reason.message : '無法還原示範資料');
+                      });
+                  }}
+                >
+                  <label className="field">
+                    <span>請輸入「{RESET_CONFIRM}」以確認</span>
+                    <input value={resetPhrase} onChange={(event) => setResetPhrase(event.target.value)} autoComplete="off" />
+                  </label>
+                  <button type="submit" className="reset-danger" disabled={resetPhrase !== RESET_CONFIRM}>
+                    確認還原
+                  </button>
+                </form>
+              ) : (
+                <button type="button" className="reset-danger" onClick={() => setResetOpen(true)}>
+                  還原示範資料
+                </button>
+              )}
+              {resetError ? <p className="sidebar-error">{resetError}</p> : null}
+            </div>
+          ) : null}
           <button
             type="button"
-            className="reset-btn"
+            className="logout-btn"
             onClick={() => {
-              const ok = window.confirm('還原後，資料庫裡的維修資料會被示範資料覆蓋。確定要還原嗎？');
-              if (!ok) return;
-              void resetDemo().then(() => navigate('/'));
+              void logout();
             }}
           >
-            還原示範資料
+            登出
           </button>
         </div>
       </aside>

@@ -1,13 +1,15 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { StatusBadge } from '../components/StatusBadge';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 import { formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 import { REPAIR_KIND_LABEL, STATUS_HINT, STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
+import { canonicalWorkOrderNumber, toHalfWidth } from '../lib/orderNumber';
+import { LOOKUP_NUMBER_HELP, LOOKUP_PHONE_PLACEHOLDER, SERIAL_HINT, countdownSeconds, showDemoAndReset } from '../lib/ux';
 import type { PublicOrder, RepairStatus } from '../types';
 
-type Query = { number: string; nt: string; from: string; to: string };
+type Query = { number: string; phoneLast4: string };
 
 function StatusStepper({ status }: { status: RepairStatus }) {
   const current = STATUS_ORDER.indexOf(status);
@@ -86,25 +88,34 @@ function LookupCard({ order }: { order: PublicOrder }) {
 
 export function LookupPage() {
   const [params] = useSearchParams();
-  const preset = params.get('number') ?? '';
-  const [number, setNumber] = useState(preset);
-  const [nt, setNt] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
+  const presetNumber = params.get('number') ?? '';
+  const presetPhone = toHalfWidth(params.get('phoneLast4') ?? '').trim();
+  const [number, setNumber] = useState(presetNumber);
+  const [phoneLast4, setPhoneLast4] = useState(presetPhone);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [cooldownTotal, setCooldownTotal] = useState(0);
+  const [cooldownStart, setCooldownStart] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const cooldown = countdownSeconds(cooldownTotal, cooldownStart, now);
   const [orders, setOrders] = useState<PublicOrder[] | null>(null);
-  const [query, setQuery] = useState<Query | null>(preset ? { number: preset, nt: '', from: '', to: '' } : null);
+  const [query, setQuery] = useState<Query | null>(
+    presetNumber && /^\d{4}$/.test(presetPhone) ? { number: presetNumber, phoneLast4: presetPhone } : null,
+  );
   usePageTitle('查詢維修進度');
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [cooldown]);
 
   useEffect(() => {
     if (!query) return;
     const controller = new AbortController();
     const search = new URLSearchParams();
-    if (query.number.trim()) search.set('number', query.number.trim());
-    if (query.nt.trim()) search.set('nt', query.nt.trim());
-    if (query.from) search.set('from', query.from);
-    if (query.to) search.set('to', query.to);
+    search.set('number', query.number.trim());
+    search.set('phoneLast4', toHalfWidth(query.phoneLast4).trim());
     setPending(true);
     api<{ orders: PublicOrder[] }>(`/api/lookup?${search.toString()}`, { signal: controller.signal })
       .then((result) => {
@@ -113,6 +124,11 @@ export function LookupPage() {
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
+        if (reason instanceof ApiError && reason.retryAfterSeconds) {
+          setCooldownTotal(reason.retryAfterSeconds);
+          setCooldownStart(Date.now());
+          setNow(Date.now());
+        }
         setOrders([]);
         setError(reason instanceof Error ? reason.message : '查詢失敗');
       })
@@ -124,22 +140,24 @@ export function LookupPage() {
 
   function runQuery(next: Query) {
     setNumber(next.number);
-    setNt(next.nt);
-    setFrom(next.from);
-    setTo(next.to);
+    setPhoneLast4(next.phoneLast4);
     setError('');
     setQuery(next);
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!number.trim() && !nt.trim()) {
+    if (cooldown > 0) return;
+    const last4 = toHalfWidth(phoneLast4).trim();
+    const padded = canonicalWorkOrderNumber(number) ?? number;
+    if (!padded.trim() || !/^\d{4}$/.test(last4)) {
       setOrders(null);
-      setError('請輸入公號、完整單號或 NT 帳號');
+      setError('請輸入完整單號與電話末四碼');
       return;
     }
+    setNumber(padded);
     setError('');
-    setQuery({ number, nt, from, to });
+    setQuery({ number: padded, phoneLast4: last4 });
   }
 
   return (
@@ -157,11 +175,11 @@ export function LookupPage() {
             <h1>查詢維修進度</h1>
           </div>
         </header>
-        <p className="lede">輸入 6 位數公號或 NT 帳號。此頁只顯示狀態與可公開的進度，不含店內檢測指令。</p>
+        <p className="lede">請輸入完整維修單號，以及留在店裡的電話末四碼。此頁只顯示狀態與可公開的進度，不含店內檢測指令。</p>
 
         <form id="lookup-form" className="panel" onSubmit={onSubmit} noValidate>
           <label className="field">
-            <span>公號或完整單號</span>
+            <span>完整單號</span>
             <input
               value={number}
               onChange={(event) => {
@@ -169,64 +187,54 @@ export function LookupPage() {
                 setOrders(null);
                 setError('');
               }}
-              placeholder="100002 或 維修單-20261024-001"
+              placeholder="維修單-20261024-001"
               autoComplete="off"
               spellCheck={false}
             />
           </label>
           <label className="field">
-            <span>NT 帳號</span>
+            <span>電話末四碼</span>
             <input
-              value={nt}
+              value={phoneLast4}
               onChange={(event) => {
-                setNt(event.target.value);
+                setPhoneLast4(event.target.value);
                 setOrders(null);
                 setError('');
               }}
-              placeholder="chenghan 或 CORP\chenghan"
-              autoComplete="username"
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={4}
+              placeholder={LOOKUP_PHONE_PLACEHOLDER}
               spellCheck={false}
             />
           </label>
-          <div className="grid-2">
-            <label className="field">
-              <span>建立日起（選填）</span>
-              <input type="date" value={from} onChange={(event) => setFrom(event.target.value)} />
-            </label>
-            <label className="field">
-              <span>建立日迄（選填）</span>
-              <input type="date" value={to} onChange={(event) => setTo(event.target.value)} />
-            </label>
-          </div>
           {error ? (
             <p className="form-error" role="alert">
               {error}
+              {cooldown > 0 ? `請等待 ${cooldown} 秒` : ''}
             </p>
           ) : null}
-          <button type="submit" className="btn btn-primary" disabled={pending}>
-            {pending ? '查詢中…' : '查詢進度'}
+          <button type="submit" className="btn btn-primary" disabled={pending || cooldown > 0}>
+            {pending ? '查詢中…' : cooldown > 0 ? `請等待 ${cooldown} 秒` : '查詢進度'}
           </button>
           <p className="hint">
-            公號會同時找員工編號，以及維修單當天的流水號。流水號每天從 001 重來，只查 1 或 001 可能看到很多天；可加上日期。示範：
-            <button type="button" className="text-btn" onClick={() => runQuery({ number: '100002', nt: '', from: '', to: '' })}>
-              公號 100002
-            </button>
-            、
-            <button type="button" className="text-btn" onClick={() => runQuery({ number: '', nt: 'chenghan', from: '', to: '' })}>
-              NT chenghan
-            </button>
-            、
-            <button type="button" className="text-btn" onClick={() => runQuery({ number: '1', nt: '', from: '2026-10-24', to: '2026-10-24' })}>
-              流水號 1（2026-10-24）
-            </button>
-            。
+            {LOOKUP_NUMBER_HELP}。{SERIAL_HINT}。只填公號、NT 帳號或流水號不會查出維修單。
+            {showDemoAndReset(import.meta.env.PROD) ? (
+              <>
+                示範：
+                <button type="button" className="text-btn" onClick={() => runQuery({ number: '維修單-20261024-001', phoneLast4: '0334' })}>
+                  維修單-20261024-001／電話末四碼 0334
+                </button>
+                。
+              </>
+            ) : null}
           </p>
         </form>
 
         {orders && orders.length === 0 && !error ? (
           <div className="panel empty-state">
             <h2>查無符合的維修單</h2>
-            <p>請再核對公號、NT 帳號或日期。流水號若沒有搭配日期，不同天的 001 都會出現。</p>
+            <p>請再核對完整單號與電話末四碼。兩者都要和送修時留下的資料一致。</p>
           </div>
         ) : null}
 

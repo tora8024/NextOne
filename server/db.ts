@@ -1,10 +1,13 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from 'node:sqlite';
 import { createSeed } from '../src/data/seed.ts';
-import { deviceLabel, maskPhone, maskSerial } from '../src/lib/format.ts';
+import { isCommonPassword } from '../src/lib/common-passwords.ts';
+import { deviceLabel, maskPhone, maskSerial, phoneLast4 } from '../src/lib/format.ts';
 import { STATUS_LABEL } from '../src/lib/labels.ts';
 import {
+  canonicalWorkOrderNumber,
   formatOrderNumber,
   isEmployeeNumber,
   isNtAccount,
@@ -28,8 +31,11 @@ import type {
   RepairOrder,
   RepairStatus,
   StatusChange,
+  UserRole,
 } from '../src/types.ts';
+import { PUBLIC_RECORDER } from '../src/lib/ux.ts';
 import { HttpError } from './errors.ts';
+import { hashPassword } from './password.ts';
 
 type Row = Record<string, SQLOutputValue>;
 
@@ -109,7 +115,27 @@ CREATE TABLE IF NOT EXISTS status_history (
   author TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_status_order ON status_history(order_id);
+
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('admin', 'staff')),
+  must_change_password INTEGER NOT NULL DEFAULT 0 CHECK (must_change_password IN (0, 1)),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 `;
+
+const databaseFiles = new WeakMap<DatabaseSync, string>();
+const GENERIC_CUSTOMER_ERROR = '無法建立客戶，請確認資料後再試';
 
 export type SearchFilters = {
   number?: string;
@@ -120,27 +146,74 @@ export type SearchFilters = {
   customerId?: string;
   deviceId?: string;
   q?: string;
-  requireIdentity?: boolean;
 };
 
+export type PublicLookup = {
+  number?: string;
+  phoneLast4?: string;
+};
+
+export type SeededAdmin = {
+  username: string;
+  password: string;
+};
+
+export function restrictDatabasePermissions(filename: string) {
+  const absolute = path.resolve(filename);
+  if (fs.existsSync(absolute)) fs.chmodSync(absolute, 0o600);
+  for (const suffix of ['-wal', '-shm']) {
+    const sidecar = `${absolute}${suffix}`;
+    if (fs.existsSync(sidecar)) fs.chmodSync(sidecar, 0o600);
+  }
+}
+
+export function restrictOpenDatabase(db: DatabaseSync) {
+  const filename = databaseFiles.get(db);
+  if (filename) restrictDatabasePermissions(filename);
+}
+
 export function openDatabase(filename: string): DatabaseSync {
-  fs.mkdirSync(path.dirname(filename), { recursive: true });
-  const db = new DatabaseSync(filename);
+  const absolute = path.resolve(filename);
+  const directory = path.dirname(absolute);
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(absolute)) {
+    const fd = fs.openSync(absolute, 'a', 0o600);
+    fs.closeSync(fd);
+  }
+  fs.chmodSync(absolute, 0o600);
+  const db = new DatabaseSync(absolute);
   db.exec('PRAGMA foreign_keys = ON');
   db.exec('PRAGMA busy_timeout = 5000');
   db.exec('PRAGMA journal_mode = WAL');
   db.exec(SCHEMA);
+  ensureUserColumns(db);
+  databaseFiles.set(db, absolute);
+  restrictDatabasePermissions(absolute);
   return db;
 }
 
-export function ensureSeeded(db: DatabaseSync) {
-  const row = one(db, 'SELECT COUNT(*) AS n FROM customers');
-  if (!row || integer(row, 'n') === 0) resetSeed(db);
+function ensureUserColumns(db: DatabaseSync) {
+  const columns = db.prepare('PRAGMA table_info(users)').all() as { name?: string }[];
+  if (columns.some((column) => column.name === 'must_change_password')) return;
+  db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+  db.prepare(`UPDATE users SET must_change_password = 1 WHERE username = 'admin'`).run();
 }
 
-export function resetSeed(db: DatabaseSync) {
+export function deleteInitialPasswordFile(db: DatabaseSync) {
+  const dbFile = databaseFiles.get(db);
+  if (!dbFile) return;
+  fs.rmSync(`${dbFile}.admin-password`, { force: true });
+}
+
+export function ensureSeeded(db: DatabaseSync): SeededAdmin | null {
+  const row = one(db, 'SELECT COUNT(*) AS n FROM customers');
+  if (!row || integer(row, 'n') === 0) return resetSeed(db);
+  return ensureDefaultAdmin(db);
+}
+
+export function resetSeed(db: DatabaseSync): SeededAdmin | null {
   const seed = createSeed();
-  transaction(db, () => {
+  const admin = transaction(db, () => {
     db.exec('DELETE FROM action_logs');
     db.exec('DELETE FROM status_history');
     db.exec('DELETE FROM work_orders');
@@ -189,7 +262,57 @@ export function resetSeed(db: DatabaseSync) {
       `INSERT INTO daily_serials (order_date, last_serial)
        SELECT order_date, MAX(serial) FROM work_orders GROUP BY order_date`,
     );
+    return ensureDefaultAdmin(db);
   });
+  restrictOpenDatabase(db);
+  return admin;
+}
+
+export function createUser(db: DatabaseSync, input: { username: string; password: string; role: UserRole }) {
+  const username = input.username.trim();
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(username)) throw new HttpError(400, '帳號格式不正確');
+  if (input.password.length < 12 || input.password.length > 200) throw new HttpError(400, '密碼長度不正確');
+  if (isCommonPassword(input.password)) throw new HttpError(400, '請換一個不容易猜到的密碼');
+  if (input.role !== 'admin' && input.role !== 'staff') throw new HttpError(400, '角色不正確');
+  try {
+    db.prepare('INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)').run(
+      crypto.randomUUID(),
+      username,
+      hashPassword(input.password),
+      input.role,
+      new Date().toISOString(),
+    );
+  } catch (error) {
+    if (isUnique(error)) throw new HttpError(400, '無法建立帳號，請確認資料後再試');
+    throw error;
+  }
+}
+
+function ensureDefaultAdmin(db: DatabaseSync): SeededAdmin | null {
+  const existing = one(db, 'SELECT id FROM users WHERE username = ?', 'admin');
+  if (existing) return null;
+  const fromEnv = process.env.REPAIR_ADMIN_PASSWORD;
+  let password: string;
+  if (fromEnv !== undefined && fromEnv.length > 0) {
+    if (fromEnv.length < 12 || fromEnv.length > 200) throw new HttpError(500, 'REPAIR_ADMIN_PASSWORD 長度不正確');
+    if (isCommonPassword(fromEnv)) throw new HttpError(500, 'REPAIR_ADMIN_PASSWORD 是常見密碼');
+    password = fromEnv;
+    console.log('預設管理員帳號：admin');
+    console.log('預設管理員密碼取自 REPAIR_ADMIN_PASSWORD，首次登入必須變更。');
+  } else {
+    password = randomBytes(18).toString('base64url');
+    const dbFile = databaseFiles.get(db);
+    const passwordFile = dbFile ? `${dbFile}.admin-password` : path.resolve(process.cwd(), 'data', 'admin-password.txt');
+    fs.mkdirSync(path.dirname(passwordFile), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(passwordFile, `${password}\n`, { mode: 0o600 });
+    fs.chmodSync(passwordFile, 0o600);
+    console.log('預設管理員帳號：admin');
+    console.log(`預設管理員初始密碼檔：${passwordFile}`);
+  }
+  db.prepare(
+    'INSERT INTO users (id, username, password_hash, role, must_change_password, created_at) VALUES (?, ?, ?, ?, 1, ?)',
+  ).run(crypto.randomUUID(), 'admin', hashPassword(password), 'admin', new Date().toISOString());
+  return { username: 'admin', password };
 }
 
 export function getState(db: DatabaseSync): Database {
@@ -327,38 +450,44 @@ export function searchOrders(db: DatabaseSync, filters: SearchFilters): RepairOr
   return hydrateOrders(db, ids.map((id) => ({ id: id.id, matches: id.matches })), false);
 }
 
-export function searchPublic(db: DatabaseSync, filters: SearchFilters): PublicOrder[] {
-  const ids = matchingIds(db, { ...filters, requireIdentity: true });
-  const orders = hydrateOrders(
+export function searchPublic(db: DatabaseSync, filters: PublicLookup): PublicOrder[] {
+  const canonical = canonicalWorkOrderNumber(filters.number ?? '');
+  if (!canonical) throw new HttpError(400, '請輸入完整單號，格式為 維修單-YYYYMMDD-NNN');
+  const provided = toHalfWidth(filters.phoneLast4 ?? '').trim();
+  if (!/^\d{4}$/.test(provided)) throw new HttpError(400, '請輸入電話末四碼');
+  const row = one(
     db,
-    ids.map((item) => ({ id: item.id })),
-    true,
+    `SELECT o.id, c.name, c.phone
+     FROM work_orders o
+     JOIN customers c ON c.id = o.customer_id
+     WHERE o.order_number = ?`,
+    canonical,
   );
-  const customerById = new Map(
-    all(db, 'SELECT id, name, phone FROM customers').map((row) => [text(row, 'id'), row]),
-  );
-  const deviceById = new Map(all(db, 'SELECT id, kind, brand, model, serial_number FROM devices').map((row) => [text(row, 'id'), row]));
-  return orders.map((order) => {
-    const customer = customerById.get(order.customerId);
-    const device = deviceById.get(order.deviceId);
-    const summary = device
-      ? deviceLabel({
-          id: text(device, 'id'),
-          customerId: order.customerId,
-          kind: text(device, 'kind') as DeviceKind,
-          brand: text(device, 'brand'),
-          model: text(device, 'model'),
-          createdAt: '',
-        })
-      : '—';
-    return {
+  const actual = row ? phoneLast4(text(row, 'phone')) : '';
+  const samePhone = timingSafeEqual(Buffer.from(actual.padEnd(4, '\0')), Buffer.from(provided));
+  if (!row || actual.length !== 4 || !samePhone) return [];
+  const order = hydrateOrders(db, [{ id: text(row, 'id') }], true)[0];
+  if (!order) return [];
+  const device = one(db, 'SELECT id, kind, brand, model, serial_number FROM devices WHERE id = ?', order.deviceId);
+  const summary = device
+    ? deviceLabel({
+        id: text(device, 'id'),
+        customerId: order.customerId,
+        kind: text(device, 'kind') as DeviceKind,
+        brand: text(device, 'brand'),
+        model: text(device, 'model'),
+        createdAt: '',
+      })
+    : '—';
+  return [
+    {
       ...toPublic(order),
-      customerName: customer ? text(customer, 'name') : '—',
-      phoneMasked: customer ? maskPhone(text(customer, 'phone')) : '',
+      customerName: text(row, 'name'),
+      phoneMasked: maskPhone(text(row, 'phone')),
       deviceSummary: summary,
       serialLast4: device ? maskSerial(textOpt(device, 'serial_number')) : undefined,
-    };
-  });
+    },
+  ];
 }
 
 export function explainPlan(db: DatabaseSync, sql: string, ...params: SQLInputValue[]): string {
@@ -375,9 +504,6 @@ function matchingIds(db: DatabaseSync, filters: SearchFilters): { id: string; ma
   if (from && to && from > to) throw new HttpError(400, '日期範圍的開始日不能晚於結束日');
   const number = toHalfWidth(filters.number ?? '').trim();
   const nt = (filters.nt ?? '').trim();
-  if (filters.requireIdentity && !number && !nt) {
-    throw new HttpError(400, '請輸入公號、完整單號或 NT 帳號');
-  }
   if (nt && !isNtAccount(nt)) throw new HttpError(400, 'NT 帳號格式不正確，例如 CORP\\chenghan 或 chenghan');
 
   const byNumber = number ? idsForNumber(db, number, from, to) : null;
@@ -539,7 +665,7 @@ function resolveCustomer(db: DatabaseSync, input: CreateOrderInput, at: string):
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, name, phone, email || null, input.customer.note?.trim() || null, employeeNumber, ntAccount, ntSam(ntAccount), at);
   } catch (error) {
-    if (isUnique(error)) throw new HttpError(400, '這個公號已經有客戶');
+    if (isUnique(error)) throw new HttpError(400, GENERIC_CUSTOMER_ERROR);
     throw error;
   }
   return id;
@@ -761,7 +887,7 @@ function toPublic(order: RepairOrder): PublicOrder {
     publicLogs: order.logs.filter((entry) => entry.visibleToCustomer).map((entry) => ({
       id: entry.id,
       at: entry.at,
-      author: entry.author,
+      author: PUBLIC_RECORDER,
       content: entry.content,
       kind: entry.kind,
     })),

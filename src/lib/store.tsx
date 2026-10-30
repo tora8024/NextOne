@@ -1,24 +1,36 @@
 import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createContext } from 'react';
-import type { CreateOrderInput, Database, RepairOrder, RepairStatus } from '../types';
-import { api } from './api';
+import type { CreateOrderInput, Database, RepairOrder, RepairStatus, SessionUser } from '../types';
+import { PASSWORD_UPDATED } from './ux';
+import { ApiError, api } from './api';
+
+type Phase = 'loading' | 'anonymous' | 'password' | 'ready';
 
 type StoreValue = {
   db: Database | null;
+  user: SessionUser | null;
+  phase: Phase;
   error: string;
   revision: number;
+  notice: string;
+  login: (username: string, password: string) => Promise<void>;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
+  logout: () => Promise<void>;
   resetDemo: () => Promise<void>;
   createOrder: (input: CreateOrderInput) => Promise<RepairOrder>;
-  updateStatus: (orderId: string, status: RepairStatus, author: string) => Promise<void>;
-  addLog: (orderId: string, input: { author: string; content: string; visibleToCustomer: boolean }) => Promise<void>;
+  updateStatus: (orderId: string, status: RepairStatus) => Promise<void>;
+  addLog: (orderId: string, input: { content: string; visibleToCustomer: boolean }) => Promise<void>;
 };
 
 const StoreContext = createContext<StoreValue | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [db, setDb] = useState<Database | null>(null);
+  const [user, setUser] = useState<SessionUser | null>(null);
+  const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
+  const [notice, setNotice] = useState('');
 
   const refresh = useCallback(async () => {
     const next = await api<Database>('/api/state');
@@ -29,19 +41,83 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    api<Database>('/api/state')
-      .then((next) => {
+    api<SessionUser>('/api/me')
+      .then(async (session) => {
+        if (cancelled) return;
+        setUser(session);
+        if (session.mustChangePassword) {
+          setDb(null);
+          setPhase('password');
+          return;
+        }
+        const next = await api<Database>('/api/state');
         if (cancelled) return;
         setDb(next);
         setError('');
+        setPhase('ready');
       })
       .catch((reason: unknown) => {
         if (cancelled) return;
+        setUser(null);
+        setDb(null);
+        if (reason instanceof ApiError && reason.status === 401) {
+          setError('');
+          setPhase('anonymous');
+          return;
+        }
         setError(reason instanceof Error ? reason.message : '無法讀取維修資料');
+        setPhase('anonymous');
       });
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  const login = useCallback(
+    async (username: string, password: string) => {
+      const session = await api<SessionUser>('/api/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password }),
+      });
+      setUser(session);
+      if (session.mustChangePassword) {
+        setDb(null);
+        setPhase('password');
+        return;
+      }
+      try {
+        await refresh();
+      } catch (error) {
+        setUser(null);
+        setDb(null);
+        setPhase('anonymous');
+        throw error;
+      }
+      setPhase('ready');
+    },
+    [refresh],
+  );
+
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string) => {
+      const session = await api<SessionUser>('/api/account/password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      setUser(session);
+      await refresh();
+      setNotice(PASSWORD_UPDATED);
+      setPhase('ready');
+    },
+    [refresh],
+  );
+
+  const logout = useCallback(async () => {
+    await api('/api/logout', { method: 'POST' });
+    setUser(null);
+    setDb(null);
+    setNotice('');
+    setPhase('anonymous');
   }, []);
 
   const createOrder = useCallback(
@@ -54,10 +130,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const updateStatus = useCallback(
-    async (orderId: string, status: RepairStatus, author: string) => {
+    async (orderId: string, status: RepairStatus) => {
       await api(`/api/orders/${encodeURIComponent(orderId)}/status`, {
         method: 'POST',
-        body: JSON.stringify({ status, author }),
+        body: JSON.stringify({ status }),
       });
       await refresh();
     },
@@ -65,7 +141,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 
   const addLog = useCallback(
-    async (orderId: string, input: { author: string; content: string; visibleToCustomer: boolean }) => {
+    async (orderId: string, input: { content: string; visibleToCustomer: boolean }) => {
       await api(`/api/orders/${encodeURIComponent(orderId)}/logs`, {
         method: 'POST',
         body: JSON.stringify(input),
@@ -83,8 +159,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ db, error, revision, resetDemo, createOrder, updateStatus, addLog }),
-    [db, error, revision, resetDemo, createOrder, updateStatus, addLog],
+    () => ({ db, user, phase, error, revision, notice, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog }),
+    [db, user, phase, error, revision, notice, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

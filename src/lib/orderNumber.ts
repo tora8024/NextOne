@@ -51,6 +51,20 @@ export function parseFullOrderNumber(value: string): { orderDate: string; serial
   return { orderDate: match[1], serial };
 }
 
+/** Full work-order number: 維修單-YYYYMMDD-NNN or WO-YYYYMMDD-NNN. A short serial is padded to 3 digits. */
+export function canonicalWorkOrderNumber(value: string): string | null {
+  const normalized = toHalfWidth(value).trim();
+  const match = /^(?:維修單|WO)-(\d{8})-(\d+)$/i.exec(normalized);
+  if (!match?.[1] || !match[2]) return null;
+  const serial = Number(match[2]);
+  if (!Number.isInteger(serial) || serial < 1 || serial > 1_000_000_000) return null;
+  try {
+    return formatOrderNumber(match[1], serial);
+  } catch {
+    return null;
+  }
+}
+
 export function parseSerialToken(value: string): number | null {
   const normalized = toHalfWidth(value).trim();
   if (!/^\d+$/.test(normalized) || normalized.length > 9) return null;

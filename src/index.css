@@ -193,6 +193,30 @@ a {
   padding-top: 16px;
 }
 
+.who {
+  margin: 0;
+  color: var(--sidebar-muted);
+  font-size: 13px;
+}
+
+.sidebar-error {
+  margin: 0;
+  color: #ffb4a2;
+  font-size: 13px;
+}
+
+.reset-block {
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.reset-block .field > span {
+  color: var(--sidebar-text);
+}
+
+.reset-danger,
+.logout-btn,
 .reset-btn,
 .menu-btn {
   background: transparent;
@@ -202,7 +226,28 @@ a {
   padding: 8px 10px;
 }
 
-.reset-btn:hover {
+.reset-danger {
+  color: #ffd4cc;
+  border-color: #e24b4b;
+}
+
+.reset-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.reset-block input {
+  background: #fff;
+  color: var(--ink);
+}
+
+.logout-btn {
+  margin-top: 4px;
+}
+
+.reset-btn:hover,
+.reset-danger:hover,
+.logout-btn:hover {
   color: #fff;
 }
 
