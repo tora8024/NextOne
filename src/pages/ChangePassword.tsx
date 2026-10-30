@@ -1,9 +1,12 @@
 import { useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { usePageTitle } from '../lib/hooks';
 import { useStore } from '../lib/store';
+import { INITIAL_PASSWORD_HINT, PASSWORD_RULE, PASSWORD_UPDATED } from '../lib/ux';
 
 export function ChangePasswordPage() {
   const { user, changePassword, logout } = useStore();
+  const navigate = useNavigate();
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -25,6 +28,7 @@ export function ChangePasswordPage() {
     setPending(true);
     try {
       await changePassword(currentPassword, newPassword);
+      navigate('/', { replace: true, state: { notice: PASSWORD_UPDATED } });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '無法變更密碼');
     } finally {
@@ -80,6 +84,8 @@ export function ChangePasswordPage() {
               required
             />
           </label>
+          <p className="hint">{INITIAL_PASSWORD_HINT}</p>
+          <p className="hint">{PASSWORD_RULE}</p>
           {error ? (
             <p className="form-error" role="alert">
               {error}

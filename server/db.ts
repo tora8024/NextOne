@@ -32,6 +32,7 @@ import type {
   StatusChange,
   UserRole,
 } from '../src/types.ts';
+import { PUBLIC_RECORDER } from '../src/lib/ux.ts';
 import { HttpError } from './errors.ts';
 import { hashPassword } from './password.ts';
 
@@ -883,7 +884,7 @@ function toPublic(order: RepairOrder): PublicOrder {
     publicLogs: order.logs.filter((entry) => entry.visibleToCustomer).map((entry) => ({
       id: entry.id,
       at: entry.at,
-      author: entry.author,
+      author: PUBLIC_RECORDER,
       content: entry.content,
       kind: entry.kind,
     })),

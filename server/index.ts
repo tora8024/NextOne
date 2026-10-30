@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalWorkOrderNumber } from '../src/lib/orderNumber.ts';
+import { attemptsRemainingWarning, loginLockoutMessage, lookupLockoutMessage } from '../src/lib/ux.ts';
 import type { SessionUser } from '../src/types.ts';
 import {
   authenticate,
@@ -19,7 +20,7 @@ import {
 import { addLog, createOrder, deleteInitialPasswordFile, ensureSeeded, getState, openDatabase, resetSeed, restrictOpenDatabase, searchOrders, searchPublic, updateStatus } from './db.ts';
 import { HttpError } from './errors.ts';
 import { databasePath } from './paths.ts';
-import { clientIp, generalLimiter, loginLimiter, loginLockout, lookupLimiter, lookupLockout, purgeLimitMaps } from './rate-limit.ts';
+import { clientIp, generalLimiter, loginAccountLockout, loginLimiter, loginLockout, lookupLimiter, lookupLockout, purgeLimitMaps } from './rate-limit.ts';
 import { parseCreateOrder, parseLogBody, parseLogin, parsePasswordChange, parsePublicLookup, parseSearchQuery, parseStatusBody } from './validate.ts';
 
 const SECURITY_HEADERS = {
@@ -64,8 +65,8 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
       const ip = clientIp(req);
       if (!generalLimiter.allow(ip)) {
-        send(req, res, 429, { error: '請求次數過多，請稍後再試' });
-        return;
+        const retryAfter = generalLimiter.retryAfter(ip);
+        throw new HttpError(429, `請求次數過多，請約 ${retryAfter} 秒後再試。`, retryAfter);
       }
       if (req.method === 'OPTIONS') {
         if (!originAllowed(req)) {
@@ -81,23 +82,32 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/login') {
-        if (!loginLimiter.allow(ip)) {
-          send(req, res, 429, { error: '登入次數過多，請稍後再試' });
-          return;
+        if (loginLimiter.isLimited(ip)) {
+          const retryAfter = loginLimiter.retryAfter(ip);
+          throw new HttpError(429, loginLockoutMessage(retryAfter), retryAfter);
         }
         assertJson(req);
         const body = parseLogin(await readJson(req));
-        const account = `${body.username.trim().toLowerCase()}|${ip}`;
-        if (loginLockout.isLocked(account)) {
+        const username = body.username.trim().toLowerCase();
+        const account = `${username}|${ip}`;
+        if (loginLockout.isLocked(account) || loginAccountLockout.isLocked(username)) {
+          const retryAfter = Math.max(loginLockout.retryAfter(account), loginAccountLockout.retryAfter(username));
           authenticate(database, body.username, body.password);
-          throw new HttpError(429, '登入失敗次數過多，請稍後再試');
+          throw new HttpError(429, loginLockoutMessage(retryAfter), retryAfter);
         }
         const user = authenticate(database, body.username, body.password);
         if (!user) {
+          loginLimiter.record(ip);
           loginLockout.fail(account);
-          throw new HttpError(401, '帳號或密碼不正確');
+          loginAccountLockout.fail(username);
+          const remainingAttempts = Math.min(loginLockout.remaining(account), loginAccountLockout.remaining(username));
+          const lockMs = Number(process.env.REPAIR_LOGIN_LOCKOUT_MS ?? 15 * 60_000);
+          const warning = attemptsRemainingWarning(remainingAttempts, Number.isFinite(lockMs) && lockMs > 0 ? lockMs : 15 * 60_000);
+          const message = warning ? `帳號或密碼不正確。${warning}` : '帳號或密碼不正確';
+          throw new HttpError(401, message, undefined, remainingAttempts);
         }
         loginLockout.succeed(account);
+        loginAccountLockout.succeed(username);
         const session = createSession(database, user.username);
         send(req, res, 200, user, { 'Set-Cookie': sessionCookie(session.token, session.maxAge) });
         return;
@@ -123,8 +133,8 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
       }
       if (req.method === 'GET' && url.pathname === '/api/lookup') {
         if (!lookupLimiter.allow(ip)) {
-          send(req, res, 429, { error: '查詢次數過多，請稍後再試' });
-          return;
+          const retryAfter = lookupLimiter.retryAfter(ip);
+          throw new HttpError(429, lookupLockoutMessage(retryAfter, storePhone()), retryAfter);
         }
         const query = parsePublicLookup({
           number: url.searchParams.get('number') ?? '',
@@ -133,7 +143,8 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
         const orderNumber = canonicalWorkOrderNumber(query.number);
         const orderKey = orderNumber ? `${orderNumber}|${ip}` : null;
         if (orderKey && lookupLockout.isLocked(orderKey)) {
-          throw new HttpError(429, '這個單號查詢次數過多，請稍後再試');
+          const retryAfter = lookupLockout.retryAfter(orderKey);
+          throw new HttpError(429, lookupLockoutMessage(retryAfter, storePhone()), retryAfter);
         }
         let orders;
         try {
@@ -213,8 +224,17 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       const message = error instanceof Error ? error.message : '伺服器錯誤';
+      const retryAfter = error instanceof HttpError ? error.retryAfter : undefined;
+      const remainingAttempts = error instanceof HttpError ? error.remainingAttempts : undefined;
       if (status === 500) console.error(error);
-      if (!res.headersSent) send(req, res, status, { error: status === 500 ? '伺服器錯誤' : message });
+      if (!res.headersSent) {
+        const payload: { error: string; retryAfterSeconds?: number; remainingAttempts?: number } = {
+          error: status === 500 ? '伺服器錯誤' : message,
+        };
+        if (retryAfter) payload.retryAfterSeconds = retryAfter;
+        if (remainingAttempts !== undefined) payload.remainingAttempts = remainingAttempts;
+        send(req, res, status, payload, retryAfter ? { 'Retry-After': String(retryAfter) } : undefined);
+      }
     }
   }
 
@@ -259,6 +279,10 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
       });
     });
   });
+}
+
+function storePhone(): string {
+  return (process.env.REPAIR_STORE_PHONE ?? '').trim();
 }
 
 function orderIdFromPath(raw: string): string {

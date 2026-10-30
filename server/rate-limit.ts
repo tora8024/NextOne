@@ -45,6 +45,28 @@ export function createRateLimiter(options: { limit: () => number; windowMs: () =
       remember(buckets, key, current, maxKeys());
       return true;
     },
+    isLimited(key: string, now = Date.now()): boolean {
+      if (now - lastPurge >= 30_000) this.purge(now);
+      const current = buckets.get(key);
+      if (!current || now >= current.resetAt) return false;
+      return current.count >= options.limit();
+    },
+    record(key: string, now = Date.now()) {
+      if (now - lastPurge >= 30_000) this.purge(now);
+      const windowMs = options.windowMs();
+      const current = buckets.get(key);
+      if (!current || now >= current.resetAt) {
+        remember(buckets, key, { count: 1, resetAt: now + windowMs }, maxKeys());
+        return;
+      }
+      current.count += 1;
+      remember(buckets, key, current, maxKeys());
+    },
+    retryAfter(key: string, now = Date.now()): number {
+      const current = buckets.get(key);
+      if (!current || now >= current.resetAt) return 0;
+      return Math.max(1, Math.ceil((current.resetAt - now) / 1000));
+    },
     purge(now = Date.now()) {
       lastPurge = now;
       for (const [key, bucket] of buckets) {
@@ -95,6 +117,16 @@ export function createLockout(options: { limit: () => number; lockMs: () => numb
     succeed(key: string) {
       locks.delete(key);
     },
+    retryAfter(key: string, now = Date.now()): number {
+      const current = locks.get(key);
+      if (!current?.lockedUntil || current.lockedUntil <= now) return 0;
+      return Math.max(1, Math.ceil((current.lockedUntil - now) / 1000));
+    },
+    remaining(key: string, now = Date.now()): number {
+      if (this.isLocked(key, now)) return 0;
+      const current = locks.get(key);
+      return Math.max(0, options.limit() - (current?.failures ?? 0));
+    },
     purge(now = Date.now()) {
       lastPurge = now;
       const ttl = options.lockMs();
@@ -118,6 +150,7 @@ export function purgeLimitMaps(now = Date.now()) {
   lookupLimiter.purge(now);
   loginLimiter.purge(now);
   loginLockout.purge(now);
+  loginAccountLockout.purge(now);
   lookupLockout.purge(now);
 }
 
@@ -139,6 +172,12 @@ export const loginLimiter = createRateLimiter({
 export const loginLockout = createLockout({
   limit: () => intEnv('REPAIR_LOGIN_LOCKOUT_LIMIT', 5),
   lockMs: () => intEnv('REPAIR_LOGIN_LOCKOUT_MS', 15 * 60_000),
+});
+
+/** Failures for one account from every address. Higher than the per-address lock so a few remote failures cannot lock out the real user. */
+export const loginAccountLockout = createLockout({
+  limit: () => intEnv('REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT', 20),
+  lockMs: () => intEnv('REPAIR_LOGIN_ACCOUNT_LOCKOUT_MS', intEnv('REPAIR_LOGIN_LOCKOUT_MS', 15 * 60_000)),
 });
 
 export const lookupLockout = createLockout({

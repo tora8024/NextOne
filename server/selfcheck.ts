@@ -7,13 +7,29 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
 import type { Database, RepairOrder, SessionUser } from '../src/types.ts';
-import { taipeiCalendar } from '../src/lib/orderNumber.ts';
+import { canonicalWorkOrderNumber, taipeiCalendar } from '../src/lib/orderNumber.ts';
+import {
+  INITIAL_PASSWORD_HINT,
+  LOOKUP_NUMBER_HELP,
+  LOOKUP_PHONE_PLACEHOLDER,
+  PASSWORD_RULE,
+  PASSWORD_UPDATED,
+  PUBLIC_RECORDER,
+  RESET_CONFIRM,
+  SERIAL_HINT,
+  attemptsRemainingWarning,
+  countdownSeconds,
+  loginLockoutMessage,
+  lookupLockoutMessage,
+  showDemoAndReset,
+  statusConfirmText,
+} from '../src/lib/ux.ts';
 import { createSession, purgeExpiredSessions, readSession } from './auth.ts';
 import { backupDatabase } from './backup.ts';
 import { createOrder, createUser, explainPlan, openDatabase, resetSeed, searchOrders, searchPublic, type SearchFilters } from './db.ts';
 import { startServer } from './index.ts';
 import { databasePath } from './paths.ts';
-import { bucketIp, clientIp, createLockout, createRateLimiter, generalLimiter, loginLimiter, loginLockout, lookupLimiter, lookupLockout } from './rate-limit.ts';
+import { bucketIp, clientIp, createLockout, createRateLimiter, generalLimiter, loginAccountLockout, loginLimiter, loginLockout, lookupLimiter, lookupLockout } from './rate-limit.ts';
 
 const filename = path.join(os.tmpdir(), `repair-selfcheck-${process.pid}.sqlite`);
 fs.rmSync(filename, { force: true });
@@ -75,6 +91,21 @@ assert(relativeRejected, '相對資料庫路徑應被拒絕');
 assert(bucketIp('2001:db8:1:2::1') === bucketIp('2001:db8:1:2:ffff::9'), '同一個 IPv6 /64 應共用配額');
 assert(bucketIp('2001:db8:1:2::1') !== bucketIp('2001:db8:1:3::1'), '不同 IPv6 /64 應分開計算');
 assert(bucketIp('::ffff:203.0.113.8') === '203.0.113.8', 'IPv4-mapped 位址應還原成 IPv4');
+assert(PASSWORD_RULE === '8 到 200 個字，不能與目前密碼相同', '變更密碼說明應使用指定文字');
+assert(INITIAL_PASSWORD_HINT === '第一次登入時，目前密碼是初始密碼。', '應說明目前密碼是初始密碼');
+assert(LOOKUP_NUMBER_HELP === '單號印在送修單上', '查詢說明應指出單號印在送修單上');
+assert(LOOKUP_PHONE_PLACEHOLDER === '例：1234', '電話欄位提示應為例：1234');
+assert(SERIAL_HINT === '流水號要 3 位，例如 001', '應提示流水號補成 3 位');
+assert(PASSWORD_UPDATED.includes('密碼已更新') && PASSWORD_UPDATED.includes('其他視窗已登出'), '變更成功應說明密碼已更新且其他視窗已登出');
+assert(attemptsRemainingWarning(2, 15 * 60_000) === '再錯 2 次會鎖定 15 分鐘', '剩兩次應提示鎖定時間');
+assert(attemptsRemainingWarning(1, 15 * 60_000) === '再錯 1 次會鎖定 15 分鐘', '剩一次應提示鎖定時間');
+assert(attemptsRemainingWarning(3, 15 * 60_000) === null, '剩餘較多時不需預警');
+assert(countdownSeconds(10, 1_000, 4_500) === 7, '倒數應隨時間減少');
+assert(countdownSeconds(10, 1_000, 20_000) === 0, '倒數結束後應為 0');
+assert(RESET_CONFIRM === '還原示範資料', '還原必須輸入指定確認文字');
+assert(statusConfirmText('維修中') === '確定要把狀態改成「維修中」嗎？', '變更狀態前應先確認');
+assert(showDemoAndReset(false) === true, '開發環境應顯示示範與還原');
+assert(showDemoAndReset(true) === false, '正式環境應隱藏示範按鈕與還原');
 const untrustedPeer = { socket: { remoteAddress: '127.0.0.1' }, headers: { 'x-forwarded-for': '203.0.113.9' } } as unknown as IncomingMessage;
 delete process.env.REPAIR_TRUSTED_PROXIES;
 assert(clientIp(untrustedPeer) === '127.0.0.1', '未信任的來源應忽略 X-Forwarded-For');
@@ -282,13 +313,12 @@ const woForm = searchPublic(db, { number: 'WO-20261024-001', phoneLast4: '0334' 
 assert(woForm.length === 1 && woForm[0]?.orderNumber === '維修單-20261024-001', 'WO-YYYYMMDD-NNN 應等同完整單號');
 assert(searchPublic(db, { number: '維修單-20261024-001', phoneLast4: '4567' }).length === 0, '電話末四碼不符不得回傳');
 assert(searchPublic(db, { number: '維修單-20261028-002', phoneLast4: '0334' }).length === 0, '單號與他人電話不得交叉查出');
-let unpadded = false;
-try {
-  unpadded = searchPublic(db, { number: '維修單-20261024-1', phoneLast4: '0334' }).length === 0;
-} catch {
-  unpadded = true;
-}
-assert(unpadded, '未補齊的單號不得作為客戶查詢');
+assert(canonicalWorkOrderNumber('維修單-20261024-1') === '維修單-20261024-001', '不足 3 位的流水號應補零');
+assert(canonicalWorkOrderNumber('WO-20261024-1') === '維修單-20261024-001', 'WO 短流水號也應補零');
+const unpadded = searchPublic(db, { number: '維修單-20261024-1', phoneLast4: '0334' });
+assert(unpadded.length === 1 && unpadded[0]?.orderNumber === '維修單-20261024-001', '未補零的完整單號應查到同一張單');
+assert(unpadded[0]?.publicLogs.every((entry) => entry.author === PUBLIC_RECORDER), '客戶查詢的紀錄人應是門市');
+assert(!JSON.stringify(unpadded).includes('林可恩') && !JSON.stringify(unpadded).includes('周予安'), '客戶查詢不得出現店內人員姓名');
 
 const publicBody = JSON.stringify(pub);
 for (const secret of ['diskutil', 'rsync', 'smartctl', 'nvlddmkm', 'memtest', '未備份的剪輯專案']) {
@@ -524,6 +554,10 @@ async function checkHttp() {
     assert(found.status === 200 && ordersOf(found.json).length === 1, '完整單號與電話末四碼應查到一張單');
     assert(ordersOf(found.json)[0]?.orderNumber === '維修單-20261024-001', '查到的應是指定單號');
     assert(!JSON.stringify(found.json).toLowerCase().includes('diskutil'), '公開查詢不得含內部指令');
+    assert(JSON.stringify(found.json).includes(`"author":"${PUBLIC_RECORDER}"`), '公開查詢 API 的紀錄人應是門市');
+    assert(!JSON.stringify(found.json).includes('林可恩') && !JSON.stringify(found.json).includes('周予安'), '公開查詢 API 不得回傳店內人員姓名');
+    const shortNumber = await call('GET', `/api/lookup?number=${encodeURIComponent('維修單-20261024-1')}&phoneLast4=0334`);
+    assert(shortNumber.status === 200 && ordersOf(shortNumber.json)[0]?.orderNumber === '維修單-20261024-001', 'API 應把短流水號補成 3 位');
     const wrongPhone = await call('GET', `/api/lookup?number=${encodeURIComponent('維修單-20261024-001')}&phoneLast4=4567`);
     assert(wrongPhone.status === 200 && ordersOf(wrongPhone.json).length === 0, '錯誤電話末四碼不得回傳維修單');
     const crossed = await call('GET', `/api/lookup?number=${encodeURIComponent('WO-20261028-002')}&phoneLast4=0334`);
@@ -671,6 +705,7 @@ async function checkHttp() {
     assert(forwardedOther.status !== 429, '信任代理時，不同轉送 IP 應分開計算');
     delete process.env.REPAIR_TRUSTED_PROXIES;
 
+    process.env.REPAIR_STORE_PHONE = '02-2345-6780';
     process.env.REPAIR_LOOKUP_LIMIT = '100';
     process.env.REPAIR_LOOKUP_LOCKOUT_LIMIT = '3';
     lookupLimiter.reset();
@@ -682,6 +717,16 @@ async function checkHttp() {
     }
     const orderLocked = await call('GET', `/api/lookup?number=${lockedNumber}&phoneLast4=0334`);
     assert(orderLocked.status === 429, '同一單號與同一來源失敗太多次應被鎖定');
+    const lookupRetry = Number((orderLocked.json as { retryAfterSeconds?: number }).retryAfterSeconds);
+    assert(lookupRetry >= 1, '查詢鎖定應回傳剩餘秒數');
+    assert(orderLocked.headers['retry-after'] === String(lookupRetry), '查詢鎖定應送出 Retry-After');
+    assert(JSON.stringify(orderLocked.json).includes('請聯絡門市人員'), '查詢鎖定應請客戶聯絡門市人員');
+    assert(JSON.stringify(orderLocked.json).includes('02-2345-6780'), '查詢鎖定應帶出門市電話');
+    assert(
+      JSON.stringify(orderLocked.json) ===
+        JSON.stringify({ error: lookupLockoutMessage(lookupRetry, '02-2345-6780'), retryAfterSeconds: lookupRetry }),
+      '查詢鎖定文案應包含大約等待時間',
+    );
     process.env.REPAIR_TRUSTED_PROXIES = '127.0.0.1';
     const otherIpLookup = await call('GET', `/api/lookup?number=${lockedNumber}&phoneLast4=0334`, undefined, {
       'X-Forwarded-For': '203.0.113.80',
@@ -719,14 +764,31 @@ async function checkHttp() {
 
     process.env.REPAIR_LOGIN_LIMIT = '100';
     process.env.REPAIR_LOGIN_LOCKOUT_LIMIT = '3';
+    process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT = '100';
     loginLimiter.reset();
     loginLockout.reset();
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const response = await call('POST', '/api/login', { username: 'staff', password: 'wrong-password' });
-      assert(response.status === 401, '錯誤密碼應被拒絕');
-    }
+    loginAccountLockout.reset();
+    const firstWrong = await call('POST', '/api/login', { username: 'staff', password: 'wrong-password' });
+    assert(firstWrong.status === 401, '錯誤密碼應被拒絕');
+    assert((firstWrong.json as { remainingAttempts?: number }).remainingAttempts === 2, '第一次失敗後應剩 2 次');
+    assert(JSON.stringify(firstWrong.json).includes('再錯 2 次會鎖定 15 分鐘'), '剩兩次應提示鎖定 15 分鐘');
+    const secondWrong = await call('POST', '/api/login', { username: 'staff', password: 'wrong-password' });
+    assert(secondWrong.status === 401, '第二次錯誤密碼應被拒絕');
+    assert((secondWrong.json as { remainingAttempts?: number }).remainingAttempts === 1, '第二次失敗後應剩 1 次');
+    assert(JSON.stringify(secondWrong.json).includes('再錯 1 次會鎖定 15 分鐘'), '剩一次應提示鎖定 15 分鐘');
+    const thirdWrong = await call('POST', '/api/login', { username: 'staff', password: 'wrong-password' });
+    assert(thirdWrong.status === 401, '達到鎖定的那一次仍回密碼錯誤');
+    assert(!JSON.stringify(thirdWrong.json).includes('再錯'), '已經鎖定時不再提示剩餘次數');
     const accountLocked = await call('POST', '/api/login', { username: 'staff', password: staffPassword });
     assert(accountLocked.status === 429, '帳號失敗太多次後，正確密碼也應被鎖定');
+    const loginRetry = Number((accountLocked.json as { retryAfterSeconds?: number }).retryAfterSeconds);
+    assert(loginRetry >= 1, '登入鎖定應回傳剩餘秒數');
+    assert(accountLocked.headers['retry-after'] === String(loginRetry), '登入鎖定應送出 Retry-After');
+    assert(JSON.stringify(accountLocked.json).includes('請聯絡系統管理員'), '登入鎖定應請對方聯絡系統管理員');
+    assert(
+      JSON.stringify(accountLocked.json) === JSON.stringify({ error: loginLockoutMessage(loginRetry), retryAfterSeconds: loginRetry }),
+      '登入鎖定文案應包含大約等待時間',
+    );
     const otherAccount = await call('POST', '/api/login', { username: 'nobody', password: 'wrong-password' });
     assert(otherAccount.status === 401, '其他帳號不該被這次鎖定波及');
     loginLockout.reset();
@@ -766,6 +828,46 @@ async function checkHttp() {
     assert(otherPrefixLogin.status === 200, '不同 IPv6 /64 不該被這個帳號鎖定');
     delete process.env.REPAIR_TRUSTED_PROXIES;
     loginLockout.reset();
+    loginAccountLockout.reset();
+
+    process.env.REPAIR_LOGIN_LIMIT = '2';
+    process.env.REPAIR_LOGIN_LOCKOUT_LIMIT = '100';
+    process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT = '100';
+    loginLimiter.reset();
+    loginLockout.reset();
+    loginAccountLockout.reset();
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const response = await call('POST', '/api/login', { username: 'admin', password: 'replacement-pass-1' });
+      assert(response.status === 200, `成功登入不應計入 IP 失敗次數，實際 ${response.status}`);
+    }
+    const ipFailOne = await call('POST', '/api/login', { username: 'nobody', password: 'wrong-password' });
+    const ipFailTwo = await call('POST', '/api/login', { username: 'nobody', password: 'wrong-password' });
+    assert(ipFailOne.status === 401 && ipFailTwo.status === 401, '兩次失敗仍應是密碼錯誤');
+    const ipLimited = await call('POST', '/api/login', { username: 'nobody', password: 'wrong-password' });
+    assert(ipLimited.status === 429, '同一 IP 的失敗次數達到上限後應拒絕');
+    assert(Number((ipLimited.json as { retryAfterSeconds?: number }).retryAfterSeconds) >= 1, 'IP 登入限制應回傳 retryAfterSeconds');
+
+    process.env.REPAIR_LOGIN_LIMIT = '100';
+    process.env.REPAIR_LOGIN_LOCKOUT_LIMIT = '100';
+    process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT = '3';
+    process.env.REPAIR_TRUSTED_PROXIES = '127.0.0.1';
+    loginLimiter.reset();
+    loginLockout.reset();
+    loginAccountLockout.reset();
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const response = await call('POST', '/api/login', { username: 'admin', password: 'wrong-password' }, {
+        'X-Forwarded-For': `203.0.113.${attempt}`,
+      });
+      assert(response.status === 401, '全域帳號計數在鎖定前應是密碼錯誤');
+    }
+    const globalLocked = await call('POST', '/api/login', { username: 'admin', password: 'replacement-pass-1' }, {
+      'X-Forwarded-For': '203.0.113.40',
+    });
+    assert(globalLocked.status === 429, '不同 IP 的失敗累積後應鎖定整個帳號');
+    delete process.env.REPAIR_TRUSTED_PROXIES;
+    loginLockout.reset();
+    loginAccountLockout.reset();
+    loginLimiter.reset();
 
     process.env.REPAIR_LOOKUP_LIMIT = '5';
     lookupLimiter.reset();
@@ -790,11 +892,14 @@ async function checkHttp() {
     delete process.env.REPAIR_LOOKUP_LOCKOUT_LIMIT;
     delete process.env.REPAIR_LOGIN_LIMIT;
     delete process.env.REPAIR_LOGIN_LOCKOUT_LIMIT;
+    delete process.env.REPAIR_LOGIN_ACCOUNT_LOCKOUT_LIMIT;
+    delete process.env.REPAIR_STORE_PHONE;
     lookupLimiter.reset();
     generalLimiter.reset();
     loginLimiter.reset();
     lookupLockout.reset();
     loginLockout.reset();
+    loginAccountLockout.reset();
     await server.close();
     for (const suffix of ['', '-wal', '-shm', '.admin-password']) fs.rmSync(`${httpFile}${suffix}`, { force: true });
   }

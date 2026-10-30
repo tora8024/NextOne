@@ -1,10 +1,14 @@
 export class ApiError extends Error {
   status: number;
+  retryAfterSeconds?: number;
+  remainingAttempts?: number;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, retryAfterSeconds?: number, remainingAttempts?: number) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.remainingAttempts = remainingAttempts;
   }
 }
 
@@ -26,14 +30,21 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error('無法連線到維修資料庫。請確認已執行 npm run dev。');
   }
   const text = await response.text();
-  let payload: { error?: string } = {};
+  let payload: { error?: string; retryAfterSeconds?: number; remainingAttempts?: number } = {};
   if (text) {
     try {
-      payload = JSON.parse(text) as { error?: string };
+      payload = JSON.parse(text) as { error?: string; retryAfterSeconds?: number; remainingAttempts?: number };
     } catch {
       throw new Error('伺服器回應無法讀取');
     }
   }
-  if (!response.ok) throw new ApiError(response.status, payload.error || `請求失敗（${response.status}）`);
+  if (!response.ok) {
+    throw new ApiError(
+      response.status,
+      payload.error || `請求失敗（${response.status}）`,
+      payload.retryAfterSeconds,
+      payload.remainingAttempts,
+    );
+  }
   return payload as T;
 }

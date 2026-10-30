@@ -5,16 +5,23 @@ import { recentActivity, sortOrders } from '../lib/db';
 import { deviceKindSummary, formatDateTime, formatLongDate } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 import { STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
-import { useDatabase } from '../lib/store';
+import { useDatabase, useStore } from '../lib/store';
+import { PASSWORD_UPDATED } from '../lib/ux';
 
 export function DashboardPage() {
   const db = useDatabase();
+  const { notice } = useStore();
   usePageTitle('總覽');
   const openOrders = sortOrders(db.orders.filter((order) => order.status !== 'completed'));
   const activity = recentActivity(db.orders, 6);
 
   return (
     <>
+      {notice === PASSWORD_UPDATED ? (
+        <p className="notice" role="status">
+          {PASSWORD_UPDATED}
+        </p>
+      ) : null}
       <PageHeader
         kicker="工作台"
         title="總覽"

@@ -1,6 +1,7 @@
 import { useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { createContext } from 'react';
 import type { CreateOrderInput, Database, RepairOrder, RepairStatus, SessionUser } from '../types';
+import { PASSWORD_UPDATED } from './ux';
 import { ApiError, api } from './api';
 
 type Phase = 'loading' | 'anonymous' | 'password' | 'ready';
@@ -11,6 +12,7 @@ type StoreValue = {
   phase: Phase;
   error: string;
   revision: number;
+  notice: string;
   login: (username: string, password: string) => Promise<void>;
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -28,6 +30,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<Phase>('loading');
   const [error, setError] = useState('');
   const [revision, setRevision] = useState(0);
+  const [notice, setNotice] = useState('');
 
   const refresh = useCallback(async () => {
     const next = await api<Database>('/api/state');
@@ -103,6 +106,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       });
       setUser(session);
       await refresh();
+      setNotice(PASSWORD_UPDATED);
       setPhase('ready');
     },
     [refresh],
@@ -112,6 +116,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     await api('/api/logout', { method: 'POST' });
     setUser(null);
     setDb(null);
+    setNotice('');
     setPhase('anonymous');
   }, []);
 
@@ -154,8 +159,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ db, user, phase, error, revision, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog }),
-    [db, user, phase, error, revision, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog],
+    () => ({ db, user, phase, error, revision, notice, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog }),
+    [db, user, phase, error, revision, notice, login, changePassword, logout, resetDemo, createOrder, updateStatus, addLog],
   );
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

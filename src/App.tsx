@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { BrowserRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { BrowserRouter, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import { AdminLayout } from './components/Layout';
 import { StoreProvider } from './lib/store';
 import { CustomerDetailPage } from './pages/CustomerDetail';
@@ -7,6 +7,7 @@ import { CustomerListPage } from './pages/CustomerList';
 import { DashboardPage } from './pages/Dashboard';
 import { DeviceDetailPage } from './pages/DeviceDetail';
 import { DeviceListPage } from './pages/DeviceList';
+import { LoginRoute } from './pages/Login';
 import { LookupPage } from './pages/Lookup';
 import { NotFoundPage } from './pages/NotFound';
 import { OrderDetailPage } from './pages/OrderDetail';
@@ -61,10 +62,12 @@ export default function App() {
           <Route
             element={
               <StoreProvider>
-                <AdminLayout />
+                <Outlet />
               </StoreProvider>
             }
           >
+            <Route path="/login" element={<LoginRoute />} />
+            <Route element={<AdminLayout />}>
               <Route index element={<DashboardPage />} />
               <Route path="orders" element={<OrderListPage />} />
               <Route path="orders/new" element={<NewOrderRoute />} />
@@ -75,6 +78,7 @@ export default function App() {
               <Route path="devices/:deviceId" element={<DeviceDetailPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Route>
+          </Route>
           </Routes>
       </BrowserRouter>
     </ErrorBoundary>

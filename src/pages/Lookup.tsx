@@ -1,11 +1,12 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { StatusBadge } from '../components/StatusBadge';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 import { formatDateTime } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 import { REPAIR_KIND_LABEL, STATUS_HINT, STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
-import { toHalfWidth } from '../lib/orderNumber';
+import { canonicalWorkOrderNumber, toHalfWidth } from '../lib/orderNumber';
+import { LOOKUP_NUMBER_HELP, LOOKUP_PHONE_PLACEHOLDER, SERIAL_HINT, countdownSeconds, showDemoAndReset } from '../lib/ux';
 import type { PublicOrder, RepairStatus } from '../types';
 
 type Query = { number: string; phoneLast4: string };
@@ -93,11 +94,21 @@ export function LookupPage() {
   const [phoneLast4, setPhoneLast4] = useState(presetPhone);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [cooldownTotal, setCooldownTotal] = useState(0);
+  const [cooldownStart, setCooldownStart] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
+  const cooldown = countdownSeconds(cooldownTotal, cooldownStart, now);
   const [orders, setOrders] = useState<PublicOrder[] | null>(null);
   const [query, setQuery] = useState<Query | null>(
     presetNumber && /^\d{4}$/.test(presetPhone) ? { number: presetNumber, phoneLast4: presetPhone } : null,
   );
   usePageTitle('查詢維修進度');
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [cooldown]);
 
   useEffect(() => {
     if (!query) return;
@@ -113,6 +124,11 @@ export function LookupPage() {
       })
       .catch((reason: unknown) => {
         if (reason instanceof DOMException && reason.name === 'AbortError') return;
+        if (reason instanceof ApiError && reason.retryAfterSeconds) {
+          setCooldownTotal(reason.retryAfterSeconds);
+          setCooldownStart(Date.now());
+          setNow(Date.now());
+        }
         setOrders([]);
         setError(reason instanceof Error ? reason.message : '查詢失敗');
       })
@@ -131,14 +147,17 @@ export function LookupPage() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (cooldown > 0) return;
     const last4 = toHalfWidth(phoneLast4).trim();
-    if (!number.trim() || !/^\d{4}$/.test(last4)) {
+    const padded = canonicalWorkOrderNumber(number) ?? number;
+    if (!padded.trim() || !/^\d{4}$/.test(last4)) {
       setOrders(null);
       setError('請輸入完整單號與電話末四碼');
       return;
     }
+    setNumber(padded);
     setError('');
-    setQuery({ number, phoneLast4: last4 });
+    setQuery({ number: padded, phoneLast4: last4 });
   }
 
   return (
@@ -185,24 +204,30 @@ export function LookupPage() {
               inputMode="numeric"
               autoComplete="off"
               maxLength={4}
-              placeholder="0334"
+              placeholder={LOOKUP_PHONE_PLACEHOLDER}
               spellCheck={false}
             />
           </label>
           {error ? (
             <p className="form-error" role="alert">
               {error}
+              {cooldown > 0 ? `請等待 ${cooldown} 秒` : ''}
             </p>
           ) : null}
-          <button type="submit" className="btn btn-primary" disabled={pending}>
-            {pending ? '查詢中…' : '查詢進度'}
+          <button type="submit" className="btn btn-primary" disabled={pending || cooldown > 0}>
+            {pending ? '查詢中…' : cooldown > 0 ? `請等待 ${cooldown} 秒` : '查詢進度'}
           </button>
           <p className="hint">
-            單號要完整，例如 維修單-20261024-001。只填公號、NT 帳號或流水號不會查出維修單。示範：
-            <button type="button" className="text-btn" onClick={() => runQuery({ number: '維修單-20261024-001', phoneLast4: '0334' })}>
-              維修單-20261024-001／電話末四碼 0334
-            </button>
-            。
+            {LOOKUP_NUMBER_HELP}。{SERIAL_HINT}。只填公號、NT 帳號或流水號不會查出維修單。
+            {showDemoAndReset(import.meta.env.PROD) ? (
+              <>
+                示範：
+                <button type="button" className="text-btn" onClick={() => runQuery({ number: '維修單-20261024-001', phoneLast4: '0334' })}>
+                  維修單-20261024-001／電話末四碼 0334
+                </button>
+                。
+              </>
+            ) : null}
           </p>
         </form>
 

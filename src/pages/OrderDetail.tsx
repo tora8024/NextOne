@@ -5,6 +5,7 @@ import { deviceLabel, formatDateTime, formatPhone } from '../lib/format';
 import { usePageTitle } from '../lib/hooks';
 import { REPAIR_KIND_LABEL, STATUS_LABEL, STATUS_ORDER } from '../lib/labels';
 import { useDatabase, useStore } from '../lib/store';
+import { statusConfirmText } from '../lib/ux';
 import type { RepairStatus } from '../types';
 
 export function OrderDetailPage() {
@@ -50,6 +51,8 @@ export function OrderDetailPage() {
 
   async function changeStatus(status: RepairStatus) {
     if (!order || status === order.status) return;
+    const ok = window.confirm(statusConfirmText(STATUS_LABEL[status]));
+    if (!ok) return;
     try {
       await updateStatus(order.id, status);
       setNotice(`狀態已更新為「${STATUS_LABEL[status]}」。客戶查詢頁會看到這次變更。`);
