@@ -2,7 +2,19 @@ import type { IncomingMessage } from 'node:http';
 import { isIP } from 'node:net';
 
 type Bucket = { count: number; resetAt: number };
-type Lock = { failures: number; lockedUntil: number };
+type Lock = { failures: number; lockedUntil: number; updatedAt: number };
+
+const DEFAULT_MAX_KEYS = 10_000;
+
+function remember<T>(map: Map<string, T>, key: string, value: T, maxKeys: number) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  while (map.size > maxKeys) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
+}
 
 function intEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -11,20 +23,36 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
-export function createRateLimiter(options: { limit: () => number; windowMs: () => number }) {
+export function createRateLimiter(options: { limit: () => number; windowMs: () => number; maxKeys?: () => number }) {
   const buckets = new Map<string, Bucket>();
+  let lastPurge = 0;
+  const maxKeys = () => options.maxKeys?.() ?? intEnv('REPAIR_LIMIT_MAX_KEYS', DEFAULT_MAX_KEYS);
   return {
     allow(key: string, now = Date.now()): boolean {
+      if (now - lastPurge >= 30_000) this.purge(now);
       const limit = options.limit();
       const windowMs = options.windowMs();
       const current = buckets.get(key);
       if (!current || now >= current.resetAt) {
-        buckets.set(key, { count: 1, resetAt: now + windowMs });
+        remember(buckets, key, { count: 1, resetAt: now + windowMs }, maxKeys());
         return true;
       }
-      if (current.count >= limit) return false;
+      if (current.count >= limit) {
+        remember(buckets, key, current, maxKeys());
+        return false;
+      }
       current.count += 1;
+      remember(buckets, key, current, maxKeys());
       return true;
+    },
+    purge(now = Date.now()) {
+      lastPurge = now;
+      for (const [key, bucket] of buckets) {
+        if (now >= bucket.resetAt) buckets.delete(key);
+      }
+    },
+    size() {
+      return buckets.size;
     },
     reset() {
       buckets.clear();
@@ -32,35 +60,65 @@ export function createRateLimiter(options: { limit: () => number; windowMs: () =
   };
 }
 
-export function createLockout(options: { limit: () => number; lockMs: () => number }) {
+export function createLockout(options: { limit: () => number; lockMs: () => number; maxKeys?: () => number }) {
   const locks = new Map<string, Lock>();
+  let lastPurge = 0;
+  const maxKeys = () => options.maxKeys?.() ?? intEnv('REPAIR_LIMIT_MAX_KEYS', DEFAULT_MAX_KEYS);
   return {
     isLocked(key: string, now = Date.now()): boolean {
+      if (now - lastPurge >= 30_000) this.purge(now);
       const current = locks.get(key);
       if (!current?.lockedUntil) return false;
-      if (current.lockedUntil > now) return true;
+      if (current.lockedUntil > now) {
+        remember(locks, key, current, maxKeys());
+        return true;
+      }
       locks.delete(key);
       return false;
     },
     fail(key: string, now = Date.now()): boolean {
+      if (now - lastPurge >= 30_000) this.purge(now);
       const current = locks.get(key);
-      if (current && current.lockedUntil > now) return true;
+      if (current && current.lockedUntil > now) {
+        remember(locks, key, current, maxKeys());
+        return true;
+      }
       const expired = Boolean(current && current.lockedUntil > 0 && current.lockedUntil <= now);
       const failures = (expired ? 0 : (current?.failures ?? 0)) + 1;
       if (failures >= options.limit()) {
-        locks.set(key, { failures: 0, lockedUntil: now + options.lockMs() });
+        remember(locks, key, { failures: 0, lockedUntil: now + options.lockMs(), updatedAt: now }, maxKeys());
         return true;
       }
-      locks.set(key, { failures, lockedUntil: 0 });
+      remember(locks, key, { failures, lockedUntil: 0, updatedAt: now }, maxKeys());
       return false;
     },
     succeed(key: string) {
       locks.delete(key);
     },
+    purge(now = Date.now()) {
+      lastPurge = now;
+      const ttl = options.lockMs();
+      for (const [key, lock] of locks) {
+        const lockExpired = lock.lockedUntil > 0 && lock.lockedUntil <= now;
+        const failuresStale = lock.lockedUntil === 0 && lock.updatedAt + ttl <= now;
+        if (lockExpired || failuresStale) locks.delete(key);
+      }
+    },
+    size() {
+      return locks.size;
+    },
     reset() {
       locks.clear();
     },
   };
+}
+
+export function purgeLimitMaps(now = Date.now()) {
+  generalLimiter.purge(now);
+  lookupLimiter.purge(now);
+  loginLimiter.purge(now);
+  loginLockout.purge(now);
+  lookupLockout.purge(now);
 }
 
 export const generalLimiter = createRateLimiter({
@@ -166,8 +224,4 @@ export function clientIp(req: IncomingMessage): string {
     if (forwarded) return bucketIp(forwarded);
   }
   return peer === 'unknown' ? 'unknown' : bucketIp(peer);
-}
-
-export function lockoutKey(value: string): string {
-  return value.trim().toLowerCase();
 }

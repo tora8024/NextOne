@@ -192,9 +192,15 @@ export function openDatabase(filename: string): DatabaseSync {
 
 function ensureUserColumns(db: DatabaseSync) {
   const columns = db.prepare('PRAGMA table_info(users)').all() as { name?: string }[];
-  if (!columns.some((column) => column.name === 'must_change_password')) {
-    db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
-  }
+  if (columns.some((column) => column.name === 'must_change_password')) return;
+  db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+  db.prepare(`UPDATE users SET must_change_password = 1 WHERE username = 'admin'`).run();
+}
+
+export function deleteInitialPasswordFile(db: DatabaseSync) {
+  const dbFile = databaseFiles.get(db);
+  if (!dbFile) return;
+  fs.rmSync(`${dbFile}.admin-password`, { force: true });
 }
 
 export function ensureSeeded(db: DatabaseSync): SeededAdmin | null {

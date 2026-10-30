@@ -49,7 +49,7 @@ npm run check:api
 - 若設定了 `REPAIR_ADMIN_PASSWORD`（8 到 200 字），就用這個值當初始密碼。
 - 否則會寫進與資料庫同名的一次性檔案，權限 `600`，主控台只印路徑，例如 `data/repair.sqlite.admin-password`。
 
-第一次登入必須變更密碼。變更完成前，店內 API 會拒絕其他操作；客戶查詢頁不受影響。
+第一次登入必須變更密碼。變更完成前，店內 API 會拒絕其他操作；客戶查詢頁不受影響。變更密碼會登出這個帳號的其他 session，並刪掉初始密碼檔。從舊版升級、資料庫裡還沒有這個欄位時，既有的 `admin` 也會被要求變更密碼。
 
 忘記密碼時，先停止 API，刪除資料庫檔、`-wal`、`-shm`，以及 `*.admin-password`，再重新啟動。或是改設 `REPAIR_ADMIN_PASSWORD` 後刪除資料庫，讓它重新建立管理員。
 
@@ -57,7 +57,7 @@ npm run check:api
 
 過期的 session 會在啟動時清掉，之後約每 15 分鐘再清一次。
 
-登入失敗太多次會暫時鎖定該帳號。客戶查詢對同一張完整單號失敗太多次，也會暫時鎖定那張單號。速率限制預設看連線來源。只有 `REPAIR_TRUSTED_PROXIES`（逗號分隔的代理 IP，預設空白）裡的直接來源才會採用 `X-Forwarded-For`，而且取最右邊一個不在信任清單裡的位址。IPv6 以 `/64` 一起計算。
+登入失敗太多次會暫時鎖定「這個帳號 + 這個來源位址」，不會因為其他 IP 的失敗而鎖住正常登入。客戶查詢失敗太多次會暫時鎖定「這張單號 + 這個來源位址」。速率限制預設看連線來源。只有 `REPAIR_TRUSTED_PROXIES`（逗號分隔的代理 IP，預設空白）裡的直接來源才會採用 `X-Forwarded-For`，而且取最右邊一個不在信任清單裡的位址。IPv6 以 `/64` 一起計算。過期的速率與鎖定紀錄會清掉，筆數也有上限。
 
 只有管理員可以「還原示範資料」。`NODE_ENV=production` 時這個功能會關閉。預設只建立管理員；`users` 表的 `role` 可以是 `staff`，但目前沒有另開帳號的畫面。
 
@@ -87,13 +87,11 @@ npm run preview
 REPAIR_DB_PATH=/absolute/path/repair.sqlite npm run start
 ```
 
-備份使用 SQLite `VACUUM INTO`，備份檔也會設為 `600`。目標檔如果已經存在就會拒絕，不會先刪掉。
+備份使用 SQLite `VACUUM INTO`，備份檔也會設為 `600`。必須先設定絕對路徑 `REPAIR_BACKUP_DIR`。備份檔的實際目錄（解析符號連結之後）必須在這個目錄裡。目標如果已經存在，或最後一段是符號連結，會拒絕，不會覆寫。
 
 ```bash
-npm run backup -- /absolute/path/repair-backup.sqlite
+REPAIR_BACKUP_DIR=/absolute/path/backups npm run backup -- /absolute/path/backups/repair-backup.sqlite
 ```
-
-若設定 `REPAIR_BACKUP_DIR`（絕對路徑），備份檔必須放在那個目錄裡。
 
 ## 查詢條件
 

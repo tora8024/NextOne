@@ -28,7 +28,10 @@ export function changePassword(db: DatabaseSync, username: string, currentPasswo
   const user = authenticate(db, username, currentPassword);
   if (!user) throw new HttpError(401, '目前密碼不正確');
   if (newPassword === currentPassword) throw new HttpError(400, '新密碼不能與目前密碼相同');
-  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE username = ?').run(hashPassword(newPassword), username);
+  const row = db.prepare('SELECT id FROM users WHERE username = ?').get(username) as Row | undefined;
+  if (!row) throw new HttpError(401, '目前密碼不正確');
+  db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(hashPassword(newPassword), text(row, 'id'));
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(text(row, 'id'));
   return { ...user, mustChangePassword: false };
 }
 

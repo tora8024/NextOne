@@ -16,10 +16,10 @@ import {
   sessionCookie,
   sessionCookieName,
 } from './auth.ts';
-import { createOrder, ensureSeeded, getState, openDatabase, resetSeed, restrictOpenDatabase, searchOrders, searchPublic, updateStatus, addLog } from './db.ts';
+import { addLog, createOrder, deleteInitialPasswordFile, ensureSeeded, getState, openDatabase, resetSeed, restrictOpenDatabase, searchOrders, searchPublic, updateStatus } from './db.ts';
 import { HttpError } from './errors.ts';
 import { databasePath } from './paths.ts';
-import { clientIp, generalLimiter, lockoutKey, loginLimiter, loginLockout, lookupLimiter, lookupLockout } from './rate-limit.ts';
+import { clientIp, generalLimiter, loginLimiter, loginLockout, lookupLimiter, lookupLockout, purgeLimitMaps } from './rate-limit.ts';
 import { parseCreateOrder, parseLogBody, parseLogin, parsePasswordChange, parsePublicLookup, parseSearchQuery, parseStatusBody } from './validate.ts';
 
 const SECURITY_HEADERS = {
@@ -44,12 +44,14 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
   ensureSeeded(database);
   restrictOpenDatabase(database);
   purgeExpiredSessions(database);
+  purgeLimitMaps();
   const purgeTimer = setInterval(() => {
     try {
       purgeExpiredSessions(database);
     } catch {
       // The database may already be closed.
     }
+    purgeLimitMaps();
   }, 15 * 60 * 1000);
   purgeTimer.unref();
 
@@ -85,7 +87,7 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
         }
         assertJson(req);
         const body = parseLogin(await readJson(req));
-        const account = lockoutKey(body.username);
+        const account = `${body.username.trim().toLowerCase()}|${ip}`;
         if (loginLockout.isLocked(account)) {
           authenticate(database, body.username, body.password);
           throw new HttpError(429, '登入失敗次數過多，請稍後再試');
@@ -114,7 +116,9 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
         assertJson(req);
         const body = parsePasswordChange(await readJson(req));
         const updated = changePassword(database, user.username, body.currentPassword, body.newPassword);
-        send(req, res, 200, updated);
+        deleteInitialPasswordFile(database);
+        const session = createSession(database, updated.username);
+        send(req, res, 200, updated, { 'Set-Cookie': sessionCookie(session.token, session.maxAge) });
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/lookup') {
@@ -126,7 +130,8 @@ export function startServer(options?: { port?: number; filename?: string }): Pro
           number: url.searchParams.get('number') ?? '',
           phoneLast4: url.searchParams.get('phoneLast4') ?? '',
         });
-        const orderKey = canonicalWorkOrderNumber(query.number);
+        const orderNumber = canonicalWorkOrderNumber(query.number);
+        const orderKey = orderNumber ? `${orderNumber}|${ip}` : null;
         if (orderKey && lookupLockout.isLocked(orderKey)) {
           throw new HttpError(429, '這個單號查詢次數過多，請稍後再試');
         }
